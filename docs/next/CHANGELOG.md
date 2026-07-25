@@ -178,6 +178,9 @@
 - Repository and installation links now use `herdrdev/herdr` after the GitHub organization migration.
 - Relicensed Herdr from AGPL-3.0-or-later to Apache-2.0.
 
+### Added
+- Added `advanced.escape_time_ms` to configure the lone-Escape flush delay; set it to `0` for no delay, like tmux `escape-time 0`. Defaults to 10ms, preserving previous behavior.
+
 ### Fixed
 - Pane applications now receive semantic light/dark query responses and live Mode 2031 updates when the host appearance changes. (#714)
 - Remote attach now falls back to `sh` when the login shell cannot perform path discovery. (#1201)

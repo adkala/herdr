@@ -5,8 +5,8 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
     ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
-    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
-    DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_ESCAPE_TIME_MS,
+    DEFAULT_MOBILE_WIDTH_THRESHOLD, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
@@ -1015,6 +1015,11 @@ pub struct AdvancedConfig {
     /// Maximum scrollback buffer size in bytes retained per pane terminal. Default: 10000000.
     #[serde(alias = "scrollback_lines")]
     pub scrollback_limit_bytes: usize,
+    /// Milliseconds to wait after a lone ESC before delivering it to the focused
+    /// pane, so multi-byte escape sequences (arrow keys, Alt chords) can
+    /// reassemble instead of leaking a bare Escape. Set to 0 for no delay, like
+    /// tmux `escape-time 0`. Default: 10.
+    pub escape_time_ms: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1284,6 +1289,7 @@ impl Default for AdvancedConfig {
     fn default() -> Self {
         Self {
             scrollback_limit_bytes: DEFAULT_SCROLLBACK_LIMIT_BYTES,
+            escape_time_ms: DEFAULT_ESCAPE_TIME_MS,
         }
     }
 }
@@ -1980,6 +1986,20 @@ headless_rows = 50
             config.advanced.scrollback_limit_bytes,
             DEFAULT_SCROLLBACK_LIMIT_BYTES
         );
+    }
+
+    #[test]
+    fn escape_time_defaults_to_ten_and_parses_zero() {
+        assert_eq!(
+            Config::default().advanced.escape_time_ms,
+            DEFAULT_ESCAPE_TIME_MS
+        );
+
+        let config: Config = toml::from_str("[advanced]\nescape_time_ms = 0\n").unwrap();
+        assert_eq!(config.advanced.escape_time_ms, 0);
+
+        let config: Config = toml::from_str("[advanced]\nescape_time_ms = 25\n").unwrap();
+        assert_eq!(config.advanced.escape_time_ms, 25);
     }
 
     #[test]
