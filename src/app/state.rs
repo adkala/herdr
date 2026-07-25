@@ -1460,6 +1460,9 @@ pub struct AppState {
     pub shell_mode: crate::config::ShellModeConfig,
     pub new_terminal_cwd: NewTerminalCwdConfig,
     pub pane_scrollback_limit_bytes: usize,
+    /// Lone-ESC flush delay (ms) handed to the input reader thread at startup.
+    /// Tmux-style `escape-time`; 0 delivers Escape with no delay.
+    pub input_escape_time_ms: i32,
     #[allow(dead_code)] // kept for backward compat; palette.accent is the source of truth
     pub accent: Color,
     pub sound: SoundConfig,
@@ -1819,6 +1822,7 @@ impl AppState {
             shell_mode: crate::config::ShellModeConfig::Auto,
             new_terminal_cwd: NewTerminalCwdConfig::Follow,
             pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
+            input_escape_time_ms: crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
             accent: Color::Cyan,
             sound: SoundConfig {
                 enabled: false,
