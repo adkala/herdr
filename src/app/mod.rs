@@ -383,6 +383,7 @@ impl App {
     ) -> Self {
         let (prefix_code, prefix_mods) = config.prefix_key();
         crate::kitty_graphics::set_enabled(config.experimental.kitty_graphics);
+        crate::pane::set_osc52_paste_enabled(config.advanced.osc52_paste);
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(AtomicBool::new(false));
@@ -1502,6 +1503,7 @@ impl App {
 
         if !invalid_section("advanced") {
             self.state.pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes;
+            crate::pane::set_osc52_paste_enabled(config.advanced.osc52_paste);
         }
 
         if !invalid_section("update") {
