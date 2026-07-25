@@ -821,8 +821,9 @@ impl Mode {
     /// `sync_prefix_input_source` (gated by `switch_ascii_input_source_in_prefix`) so multi-level
     /// prefix commands keep ASCII until they return to the terminal.
     ///
-    /// Known limitation: `Navigator`'s search box is also held on ASCII, since this `Mode`-level
-    /// predicate can't see `search_focused` (non-ASCII filtering there would need a runtime check).
+    /// Known limitation: the search boxes in `Navigator` and `KeybindHelp` are also held on ASCII,
+    /// since this `Mode`-level predicate can't see `search_focused` (non-ASCII filtering there
+    /// would need a runtime check).
     pub(crate) fn wants_ascii_input(self) -> bool {
         matches!(
             self,
@@ -869,6 +870,48 @@ pub(crate) struct NavigatorRow {
     pub is_tab: bool,
     pub expanded: bool,
     pub search_text: String,
+    /// Whether this row itself matched the active query/state filter, as
+    /// opposed to being included as ancestor context or cascaded subtree of a
+    /// matching workspace or tab. Always true when no filter is active.
+    pub matched: bool,
+}
+
+/// One rendered line in the navigator body. Spacer lines separate workspace
+/// groups visually and are not selectable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NavigatorDisplayLine {
+    Spacer,
+    Row(usize),
+}
+
+pub(crate) fn navigator_display_lines(rows: &[NavigatorRow]) -> Vec<NavigatorDisplayLine> {
+    let mut lines = Vec::with_capacity(rows.len().saturating_mul(2));
+    for (idx, row) in rows.iter().enumerate() {
+        if row.is_workspace && !lines.is_empty() {
+            lines.push(NavigatorDisplayLine::Spacer);
+        }
+        lines.push(NavigatorDisplayLine::Row(idx));
+    }
+    lines
+}
+
+pub(crate) fn navigator_display_index_of_row(
+    lines: &[NavigatorDisplayLine],
+    row_idx: usize,
+) -> Option<usize> {
+    lines
+        .iter()
+        .position(|line| *line == NavigatorDisplayLine::Row(row_idx))
+}
+
+pub(crate) fn navigator_first_row_at_or_after(
+    lines: &[NavigatorDisplayLine],
+    line_idx: usize,
+) -> Option<usize> {
+    lines.get(line_idx..)?.iter().find_map(|line| match line {
+        NavigatorDisplayLine::Row(idx) => Some(*idx),
+        NavigatorDisplayLine::Spacer => None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1339,8 +1382,11 @@ pub struct ProductAnnouncementState {
     pub preview: bool,
 }
 
+#[derive(Default)]
 pub struct KeybindHelpState {
     pub scroll: u16,
+    pub query: String,
+    pub search_focused: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1394,6 +1440,7 @@ pub struct AppState {
     pub request_clipboard_write: Option<Vec<u8>>,
     pub creating_new_tab: bool,
     pub requested_new_tab_name: Option<String>,
+    pub pending_workspace_create_cwd: Option<std::path::PathBuf>,
     pub rename_pane_target: Option<PaneId>,
     pub worktree_create: Option<WorktreeCreateState>,
     pub worktree_open: Option<WorktreeOpenState>,
@@ -1448,6 +1495,8 @@ pub struct AppState {
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
     pub agent_panel_sort: AgentPanelSort,
+    /// Transient session-wide projection override for the built-in Agents view.
+    pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
     pub sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub next_agent_state_change_seq: u64,
@@ -1461,6 +1510,7 @@ pub struct AppState {
     pub mouse_scroll_lines: usize,
     pub confirm_close: bool,
     pub prompt_new_tab_name: bool,
+    pub prompt_new_workspace_name: bool,
     pub pane_borders: bool,
     pub pane_gaps: bool,
     pub show_agent_labels_on_pane_borders: bool,
@@ -1763,6 +1813,7 @@ impl AppState {
             request_clipboard_write: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
+            pending_workspace_create_cwd: None,
             rename_pane_target: None,
             worktree_create: None,
             worktree_open: None,
@@ -1774,7 +1825,7 @@ impl AppState {
             name_input_replace_on_type: false,
             release_notes: None,
             product_announcement: None,
-            keybind_help: KeybindHelpState { scroll: 0 },
+            keybind_help: KeybindHelpState::default(),
             navigator: NavigatorState::default(),
             copy_mode: None,
             workspace_scroll: 0,
@@ -1826,6 +1877,7 @@ impl AppState {
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
             agent_panel_sort: AgentPanelSort::Spaces,
+            agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
             next_agent_state_change_seq: 0,
@@ -1837,6 +1889,7 @@ impl AppState {
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             confirm_close: true,
             prompt_new_tab_name: true,
+            prompt_new_workspace_name: false,
             pane_borders: true,
             pane_gaps: false,
             show_agent_labels_on_pane_borders: false,
@@ -2287,6 +2340,81 @@ mod tests {
         state.ensure_test_terminals();
 
         state.assert_invariants_for_test();
+    }
+
+    fn navigator_row_for_display(is_workspace: bool) -> NavigatorRow {
+        NavigatorRow {
+            target: NavigatorTarget::Workspace { ws_idx: 0 },
+            depth: if is_workspace { 0 } else { 1 },
+            label: String::new(),
+            meta: String::new(),
+            status: crate::detect::AgentState::Idle,
+            seen: true,
+            is_current: false,
+            is_workspace,
+            is_tab: false,
+            expanded: true,
+            search_text: String::new(),
+            matched: true,
+        }
+    }
+
+    #[test]
+    fn navigator_display_lines_separate_workspace_groups() {
+        let rows = vec![
+            navigator_row_for_display(true),
+            navigator_row_for_display(false),
+            navigator_row_for_display(true),
+            navigator_row_for_display(false),
+        ];
+        assert_eq!(
+            navigator_display_lines(&rows),
+            vec![
+                NavigatorDisplayLine::Row(0),
+                NavigatorDisplayLine::Row(1),
+                NavigatorDisplayLine::Spacer,
+                NavigatorDisplayLine::Row(2),
+                NavigatorDisplayLine::Row(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn navigator_display_lines_have_no_leading_spacer() {
+        let rows = vec![
+            navigator_row_for_display(true),
+            navigator_row_for_display(false),
+        ];
+        assert_eq!(
+            navigator_display_lines(&rows),
+            vec![NavigatorDisplayLine::Row(0), NavigatorDisplayLine::Row(1)]
+        );
+        assert!(navigator_display_lines(&[]).is_empty());
+    }
+
+    #[test]
+    fn navigator_display_index_maps_row_to_line() {
+        let rows = vec![
+            navigator_row_for_display(true),
+            navigator_row_for_display(false),
+            navigator_row_for_display(true),
+        ];
+        let lines = navigator_display_lines(&rows);
+        assert_eq!(navigator_display_index_of_row(&lines, 2), Some(3));
+        assert_eq!(navigator_display_index_of_row(&lines, 9), None);
+    }
+
+    #[test]
+    fn navigator_first_row_skips_spacer_lines() {
+        let rows = vec![
+            navigator_row_for_display(true),
+            navigator_row_for_display(false),
+            navigator_row_for_display(true),
+        ];
+        let lines = navigator_display_lines(&rows);
+        // Line 2 is the spacer before the second workspace.
+        assert_eq!(navigator_first_row_at_or_after(&lines, 2), Some(2));
+        assert_eq!(navigator_first_row_at_or_after(&lines, 4), None);
     }
 
     #[test]

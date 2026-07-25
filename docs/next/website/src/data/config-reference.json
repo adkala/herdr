@@ -597,7 +597,7 @@
           "key": "ui.copy_on_select",
           "type": "boolean",
           "default": "true",
-          "description": "Copy text selected with the mouse."
+          "description": "Automatically copy text selected by mouse drag or double-click. When disabled, Ctrl+C or a host-forwarded Cmd+C copies and clears the retained selection."
         },
         {
           "key": "ui.host_cursor",
@@ -639,6 +639,12 @@
           "type": "boolean",
           "default": "true",
           "description": "Ask for a tab name before creating a new tab."
+        },
+        {
+          "key": "ui.prompt_new_workspace_name",
+          "type": "boolean",
+          "default": "false",
+          "description": "Ask for a workspace name before interactive TUI creation."
         },
         {
           "key": "ui.pane_borders",
