@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Added `advanced.escape_time_ms` to configure the lone-Escape flush delay; set it to `0` for no delay, like tmux `escape-time 0`. Defaults to 10ms, preserving previous behavior.
+
 ## [0.9.4] - 2026-10-13
 
 ### Added
