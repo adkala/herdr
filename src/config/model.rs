@@ -863,6 +863,11 @@ pub struct AdvancedConfig {
     /// reassemble instead of leaking a bare Escape. Set to 0 for no delay, like
     /// tmux `escape-time 0`. Default: 10.
     pub escape_time_ms: u16,
+    /// Answer OSC 52 clipboard read queries (`ESC ] 52 ; c ; ?`) from pane
+    /// applications with the host clipboard, base64-encoded (paste support).
+    /// Default: false, because enabling lets any process running in a pane
+    /// read the clipboard invisibly; queries are ignored while disabled.
+    pub osc52_paste: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1106,6 +1111,7 @@ impl Default for AdvancedConfig {
         Self {
             scrollback_limit_bytes: DEFAULT_SCROLLBACK_LIMIT_BYTES,
             escape_time_ms: DEFAULT_ESCAPE_TIME_MS,
+            osc52_paste: false,
         }
     }
 }
@@ -1695,6 +1701,14 @@ delay_seconds = {}
 
         let config: Config = toml::from_str("[advanced]\nescape_time_ms = 25\n").unwrap();
         assert_eq!(config.advanced.escape_time_ms, 25);
+    }
+
+    #[test]
+    fn osc52_paste_is_opt_in() {
+        assert!(!Config::default().advanced.osc52_paste);
+
+        let config: Config = toml::from_str("[advanced]\nosc52_paste = true\n").unwrap();
+        assert!(config.advanced.osc52_paste);
     }
 
     #[test]

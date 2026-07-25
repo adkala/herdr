@@ -39,6 +39,7 @@ use self::agent_detection::{
     DetectionScreenReadInput, PendingIdleConfirmation, ScreenDetectionPublishInput,
     AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
 };
+pub(crate) use self::osc::set_osc52_paste_enabled;
 use self::terminal::{GhosttyPaneTerminal, PaneTerminal};
 pub(crate) use self::terminal::{
     TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalReadSnapshot, TerminalTextMatch,

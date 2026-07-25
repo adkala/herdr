@@ -4,6 +4,7 @@
 
 ### Added
 - Added `advanced.escape_time_ms` to configure the lone-Escape flush delay; set it to `0` for no delay, like tmux `escape-time 0`. Defaults to 10ms, preserving previous behavior.
+- Added opt-in OSC 52 paste support via `advanced.osc52_paste`: pane applications that query the clipboard with `OSC 52 ; c ; ?` receive the host clipboard base64-encoded. Defaults to off, keeping the previous ignore-queries behavior, because enabling lets any process in a pane read the clipboard.
 
 ### Changed
 - Relicensed Herdr from AGPL-3.0-or-later to Apache-2.0.

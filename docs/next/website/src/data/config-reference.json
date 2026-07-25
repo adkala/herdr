@@ -1064,6 +1064,12 @@
           "type": "integer",
           "default": "10",
           "description": "Milliseconds to wait after a lone Escape before delivering it to the focused pane, so multi-byte escape sequences (arrow keys, Alt chords) can reassemble instead of leaking a bare Escape. Set to 0 for no delay, like tmux `escape-time 0`; best on fast, local terminals."
+        },
+        {
+          "key": "advanced.osc52_paste",
+          "type": "boolean",
+          "default": "false",
+          "description": "Answer OSC 52 clipboard read queries (`ESC ] 52 ; c ; ?`) from pane applications with the clipboard of the machine running the Herdr server, base64-encoded. Off by default because enabling lets any process running in a pane read the clipboard invisibly; queries are ignored while disabled. Clipboard writes via OSC 52 are always supported and unaffected by this key."
         }
       ]
     },
