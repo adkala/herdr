@@ -1,5 +1,8 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use bytes::Bytes;
 
 use tracing::info;
 
@@ -621,6 +624,156 @@ fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
         sanitized.push_str("...");
     }
     sanitized
+}
+
+/// Global opt-in for answering OSC 52 clipboard read queries (paste). Set from
+/// `advanced.osc52_paste` at startup and on config reload, read on the pane
+/// PTY path. Off keeps the previous behavior: queries are silently ignored.
+static OSC52_PASTE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn set_osc52_paste_enabled(enabled: bool) {
+    OSC52_PASTE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub(super) fn osc52_paste_enabled() -> bool {
+    OSC52_PASTE_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Upper bound on clipboard text answered to an OSC 52 read query. Larger
+/// clipboards get an empty reply instead of a truncated payload, because a
+/// silently truncated paste corrupts data.
+const OSC52_PASTE_MAX_TEXT_BYTES: usize = 256 * 1024;
+
+/// Upper bound on queries retained between drains, which bounds replies per
+/// processed PTY chunk: each reply carries the full clipboard, so an
+/// unbounded burst of tiny queries could amplify into a huge response flood.
+const OSC52_MAX_PENDING_QUERIES: usize = 16;
+
+/// Detects complete OSC 52 clipboard read queries (`52;c;?` / `52;;?`) in the
+/// pane byte stream and records where each query ends, so the reply can be
+/// interleaved at the correct position among other terminal query replies.
+/// Writes (base64 payloads) are handled by libghostty and ignored here; other
+/// selectors (`p`, `s`, ...) are unsupported and stay unanswered.
+#[derive(Debug, Default)]
+pub(super) struct Osc52QueryTracker {
+    state: DefaultColorOscTrackerState,
+    body: Vec<u8>,
+    pending: Vec<usize>,
+}
+
+impl Osc52QueryTracker {
+    pub(super) fn observe(&mut self, bytes: &[u8]) {
+        for (index, &byte) in bytes.iter().enumerate() {
+            match self.state {
+                DefaultColorOscTrackerState::Ground => {
+                    if byte == 0x1b {
+                        self.state = DefaultColorOscTrackerState::Escape;
+                    }
+                }
+                DefaultColorOscTrackerState::Escape => {
+                    if byte == b']' {
+                        self.body.clear();
+                        self.state = DefaultColorOscTrackerState::OscBody;
+                    } else if is_ignored_string_intro(byte) {
+                        self.body.clear();
+                        self.state = DefaultColorOscTrackerState::IgnoreString;
+                    } else if byte == 0x1b {
+                        self.state = DefaultColorOscTrackerState::Escape;
+                    } else {
+                        self.state = DefaultColorOscTrackerState::Ground;
+                    }
+                }
+                DefaultColorOscTrackerState::OscBody => match byte {
+                    0x07 => {
+                        self.finalize(index + 1);
+                        self.state = DefaultColorOscTrackerState::Ground;
+                    }
+                    0x1b => self.state = DefaultColorOscTrackerState::OscEscape,
+                    _ => self.body.push(byte),
+                },
+                DefaultColorOscTrackerState::OscEscape => {
+                    if byte == b'\\' {
+                        self.finalize(index + 1);
+                        self.state = DefaultColorOscTrackerState::Ground;
+                    } else {
+                        self.body.push(0x1b);
+                        self.body.push(byte);
+                        self.state = DefaultColorOscTrackerState::OscBody;
+                    }
+                }
+                DefaultColorOscTrackerState::IgnoreString => {
+                    if byte == 0x1b {
+                        self.state = DefaultColorOscTrackerState::IgnoreStringEscape;
+                    }
+                }
+                DefaultColorOscTrackerState::IgnoreStringEscape => {
+                    if byte == b'\\' {
+                        self.state = DefaultColorOscTrackerState::Ground;
+                    } else if byte != 0x1b {
+                        self.state = DefaultColorOscTrackerState::IgnoreString;
+                    }
+                }
+                DefaultColorOscTrackerState::OversizedOsc => {
+                    if byte == 0x1b {
+                        self.state = DefaultColorOscTrackerState::OversizedOscEscape;
+                    } else if byte == 0x07 {
+                        self.state = DefaultColorOscTrackerState::Ground;
+                    }
+                }
+                DefaultColorOscTrackerState::OversizedOscEscape => {
+                    if byte == b'\\' {
+                        self.state = DefaultColorOscTrackerState::Ground;
+                    } else if byte != 0x1b {
+                        self.state = DefaultColorOscTrackerState::OversizedOsc;
+                    }
+                }
+            }
+
+            if self.body.len() > 1024 {
+                self.body.clear();
+                self.state = DefaultColorOscTrackerState::OversizedOsc;
+            }
+        }
+    }
+
+    fn finalize(&mut self, end_offset: usize) {
+        if is_osc52_clipboard_query(&self.body) && self.pending.len() < OSC52_MAX_PENDING_QUERIES {
+            self.pending.push(end_offset);
+        }
+        self.body.clear();
+    }
+
+    pub(super) fn drain_pending(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+/// `52;<selector>;?` with selector `c` or empty, mirroring the selectors the
+/// clipboard write path accepts.
+fn is_osc52_clipboard_query(body: &[u8]) -> bool {
+    let Some(rest) = body.strip_prefix(b"52;") else {
+        return false;
+    };
+    let Some(selector) = rest.strip_suffix(b";?") else {
+        return false;
+    };
+    selector.is_empty() || selector == b"c"
+}
+
+/// Builds the OSC 52 paste reply: `ESC ] 52 ; c ; <base64(text)> BEL`. A
+/// failed read (`None`) or oversized clipboard replies with an empty payload
+/// so a waiting application unblocks instead of timing out.
+pub(super) fn osc52_paste_reply(clipboard_text: Option<String>) -> Bytes {
+    use base64::Engine;
+    let mut reply = Vec::from(&b"\x1b]52;c;"[..]);
+    if let Some(text) = clipboard_text {
+        if text.len() <= OSC52_PASTE_MAX_TEXT_BYTES {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+            reply.extend_from_slice(encoded.as_bytes());
+        }
+    }
+    reply.push(0x07);
+    Bytes::from(reply)
 }
 
 fn parse_file_uri_cwd(uri: &str) -> Option<PathBuf> {
@@ -1518,5 +1671,86 @@ mod tests {
 
         assert_eq!(pane_default_theme(&pane).background, host_theme.background);
         assert_eq!(pane_default_theme(&pane).foreground, host_theme.foreground);
+    }
+
+    #[test]
+    fn osc52_query_tracker_reports_bel_and_st_query_end_offsets() {
+        let mut tracker = Osc52QueryTracker::default();
+
+        tracker.observe(b"before\x1b]52;c;?\x07after");
+        assert_eq!(tracker.drain_pending(), vec![15]);
+
+        tracker.observe(b"\x1b]52;;?\x1b\\");
+        assert_eq!(tracker.drain_pending(), vec![9]);
+    }
+
+    #[test]
+    fn osc52_query_tracker_ignores_writes_and_unsupported_selectors() {
+        let mut tracker = Osc52QueryTracker::default();
+
+        tracker.observe(b"\x1b]52;c;aGVsbG8=\x07");
+        tracker.observe(b"\x1b]52;p;?\x07");
+        tracker.observe(b"\x1b]52;s;?\x07");
+        tracker.observe(b"\x1b]52;pc;?\x07");
+        tracker.observe(b"\x1b]52;c\x07");
+
+        assert!(tracker.drain_pending().is_empty());
+    }
+
+    #[test]
+    fn osc52_query_tracker_reassembles_query_split_across_chunks() {
+        let mut tracker = Osc52QueryTracker::default();
+
+        tracker.observe(b"\x1b]52;");
+        assert!(tracker.drain_pending().is_empty());
+        tracker.observe(b"c;?");
+        assert!(tracker.drain_pending().is_empty());
+        tracker.observe(b"\x07");
+
+        assert_eq!(tracker.drain_pending(), vec![1]);
+    }
+
+    #[test]
+    fn osc52_query_tracker_recovers_after_oversized_clipboard_write() {
+        let mut tracker = Osc52QueryTracker::default();
+
+        let mut oversized = Vec::from(&b"\x1b]52;c;"[..]);
+        oversized.extend(vec![b'A'; 4096]);
+        oversized.push(0x07);
+        tracker.observe(&oversized);
+        assert!(tracker.drain_pending().is_empty());
+
+        tracker.observe(b"\x1b]52;c;?\x07");
+        assert_eq!(tracker.drain_pending(), vec![9]);
+    }
+
+    #[test]
+    fn osc52_query_tracker_caps_pending_queries_per_drain() {
+        let mut tracker = Osc52QueryTracker::default();
+
+        for _ in 0..OSC52_MAX_PENDING_QUERIES + 8 {
+            tracker.observe(b"\x1b]52;c;?\x07");
+        }
+
+        assert_eq!(tracker.drain_pending().len(), OSC52_MAX_PENDING_QUERIES);
+    }
+
+    #[test]
+    fn osc52_paste_reply_encodes_clipboard_text() {
+        assert_eq!(
+            osc52_paste_reply(Some("hello".to_string())),
+            Bytes::from_static(b"\x1b]52;c;aGVsbG8=\x07")
+        );
+    }
+
+    #[test]
+    fn osc52_paste_reply_is_empty_for_missing_or_oversized_clipboard() {
+        let empty = Bytes::from_static(b"\x1b]52;c;\x07");
+
+        assert_eq!(osc52_paste_reply(None), empty);
+        assert_eq!(
+            osc52_paste_reply(Some("x".repeat(OSC52_PASTE_MAX_TEXT_BYTES + 1))),
+            empty
+        );
     }
 }
