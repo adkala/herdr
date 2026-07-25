@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Added `advanced.escape_time_ms` to configure the lone-Escape flush delay; set it to `0` for no delay, like tmux `escape-time 0`. Defaults to 10ms, preserving previous behavior.
+
 ## [0.9.3] - 2026-09-29
 
 This is a hotfix release for v0.9.2. See the v0.9.2 notes for the full feature release: https://github.com/herdrdev/herdr/releases/tag/v0.9.2
