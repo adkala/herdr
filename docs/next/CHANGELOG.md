@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Added `advanced.escape_time_ms` to configure the lone-Escape flush delay; set it to `0` for no delay, like tmux `escape-time 0`. Defaults to 10ms, preserving previous behavior.
 - Added `ui.sidebar_start_collapsed` to launch Herdr with the sidebar collapsed. (#1463)
 - Added macOS support for the `HERDR_AGENT=<agent>` foreground-process hint, allowing agents hidden behind host-visible wrappers such as `nono` to use the named agent's screen manifest. (#679)
 

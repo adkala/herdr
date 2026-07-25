@@ -634,6 +634,7 @@ impl App {
             shell_mode: config.terminal.shell_mode,
             new_terminal_cwd: config.terminal.new_cwd.clone(),
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
+            input_escape_time_ms: i32::from(config.advanced.escape_time_ms),
             accent: crate::config::parse_color(&config.ui.accent),
             sound: config.ui.sound.clone(),
             local_sound_playback: true,
@@ -885,7 +886,9 @@ impl App {
 
     pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         if self.input_rx.is_none() {
-            self.input_rx = Some(crate::raw_input::spawn_input_reader());
+            self.input_rx = Some(crate::raw_input::spawn_input_reader(
+                self.state.input_escape_time_ms,
+            ));
         }
         self.query_host_terminal_theme();
 

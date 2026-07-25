@@ -476,15 +476,20 @@ pub(crate) fn events_require_host_terminal_theme_query(events: &[RawInputEvent])
         .any(|event| matches!(event, RawInputEvent::HostColorSchemeChanged(_)))
 }
 
-fn input_flush_timeout_ms(framer: &RawInputFramer) -> i32 {
+fn input_flush_timeout_ms(framer: &RawInputFramer, escape_time_ms: i32) -> i32 {
     if framer.has_pending_incomplete_sgr_mouse_sequence() {
         MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
     } else {
-        RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+        escape_time_ms
     }
 }
 
-pub fn spawn_input_reader() -> mpsc::Receiver<RawInputEvent> {
+/// `escape_time_ms` is the lone-ESC flush delay (tmux-style `escape-time`).
+/// Pass `RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS` for the default; 0 delivers Escape
+/// with no delay at the cost of reassembling escape sequences split across reads.
+pub fn spawn_input_reader(escape_time_ms: i32) -> mpsc::Receiver<RawInputEvent> {
+    // poll() blocks forever on a negative timeout; clamp so config can't hang input.
+    let escape_time_ms = escape_time_ms.max(0);
     let (tx, rx) = mpsc::channel(256);
 
     std::thread::spawn(move || {
@@ -501,11 +506,19 @@ pub fn spawn_input_reader() -> mpsc::Receiver<RawInputEvent> {
                 Ok(n) => {
                     send_raw_input_events(framer.push(&scratch[..n]), &tx);
 
-                    if stdin_read_ready(&reader, input_flush_timeout_ms(&framer)) == Some(false) {
+                    if stdin_read_ready(&reader, input_flush_timeout_ms(&framer, escape_time_ms))
+                        == Some(false)
+                    {
                         let had_pending = framer.has_pending_input();
                         let events = framer.flush_timeout();
                         let held_escape = had_pending && events.is_empty();
                         send_raw_input_events(events, &tx);
+                        // Fixed grace re-poll: only reached when flush held an
+                        // incomplete sequence (color reply, split UTF-8/paste),
+                        // never a steady-state lone ESC — so escape_time=0 still
+                        // delivers Escape with no delay while split sequences keep
+                        // their reassembly window. The fixed timeout here is
+                        // intentional, not the escape-time knob.
                         if held_escape
                             && stdin_read_ready(&reader, RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS)
                                 == Some(false)
@@ -1625,16 +1638,23 @@ mod tests {
         let mut mouse = RawInputFramer::default();
         assert!(mouse.push(b"\x1b[<3").is_empty());
         assert_eq!(
-            input_flush_timeout_ms(&mouse),
+            input_flush_timeout_ms(&mouse, RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS),
+            MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
+        );
+        // escape-time=0 must not shorten mouse-sequence reassembly.
+        assert_eq!(
+            input_flush_timeout_ms(&mouse, 0),
             MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
         );
 
         let mut escape = RawInputFramer::default();
         assert!(escape.push(b"\x1b").is_empty());
         assert_eq!(
-            input_flush_timeout_ms(&escape),
+            input_flush_timeout_ms(&escape, RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS),
             RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
         );
+        // The configured escape time is what a lone ESC waits on.
+        assert_eq!(input_flush_timeout_ms(&escape, 0), 0);
     }
 
     #[test]
