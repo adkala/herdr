@@ -813,7 +813,15 @@ impl App {
                 height: binding.height,
                 chrome: binding.chrome.unwrap_or_default(),
             },
-        )
+        )?;
+        if let Some(description) = binding.description.as_deref() {
+            if let Some(popup) = self.state.popup_pane.as_ref() {
+                if let Some(terminal) = self.state.terminals.get_mut(&popup.terminal_id) {
+                    terminal.set_manual_label(description.to_string());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn custom_command_env(&self) -> (Vec<(String, String)>, Option<std::path::PathBuf>) {
