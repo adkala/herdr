@@ -396,6 +396,15 @@ claude = "on"
 
 Search the [Config reference](/docs/config-reference/) for scrollback limits, nested launches, and other advanced or experimental settings. See [Session state and restore](/docs/session-state/) before enabling pane screen history; that guide explains the security trade-off of saving pane contents.
 
+Pane applications that read the clipboard with OSC 52 (for example Neovim paste) get no answer by default, because answering lets any process in a pane read the clipboard invisibly. Opt in with `advanced.osc52_paste`:
+
+```toml
+[advanced]
+osc52_paste = "terminal"
+```
+
+`true` (or `"server"`) answers with the clipboard of the machine running the Herdr server. `"terminal"` forwards the query to the terminal Herdr is displayed in and relays its reply, so panes paste from your local clipboard even when Herdr runs on an SSH remote; your terminal must support OSC 52 reads and may ask for permission, and panes receive an empty reply after a 5 second timeout. OSC 52 clipboard writes (copy) always work and are unaffected by this key.
+
 ## Kitty graphics
 
 Kitty graphics rendering for attached local clients is experimental and disabled by default:

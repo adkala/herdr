@@ -84,7 +84,7 @@ By default, remote attach uses the normal restart/stop flow if it needs to repla
 herdr --remote workbox --handoff
 ```
 
-If you SSH into the server first and run `herdr` there, Herdr runs entirely on the server. That mode is useful and simple, but it cannot access your local desktop clipboard beyond normal terminal text paste.
+If you SSH into the server first and run `herdr` there, Herdr runs entirely on the server. That mode is useful and simple. Copies still reach your local clipboard through OSC 52 writes, and setting `advanced.osc52_paste = "terminal"` on the server lets OSC 52-aware pane applications (such as Neovim) paste from your local clipboard too, when your terminal supports OSC 52 reads. Richer local desktop features, such as image clipboard paste, still need `herdr --remote`.
 
 When your local and remote platforms match, Herdr can copy the current local binary for direct installs. For Homebrew, mise, and Nix installs, or when the platforms differ, it downloads the matching release asset for the current client version from `https://herdr.dev/latest.json`.
 
