@@ -16,6 +16,8 @@ until pushed.
 | `ui.pane_borders = "between"`: tmux-style near-borderless splits — only the shared divider between panes is drawn, no outer frame; zoomed/single panes draw nothing | `51d4dbc0` | `pr/split-only-pane-borders` | PR candidate |
 | `ui.focused_pane_border` / `ui.unfocused_pane_border` / `ui.dim_unfocused_panes`: separate focused-pane styling like tmux `pane-active-border-style` / `pane-border-style` / `window-style` shading | `2fb79ee1` | `pr/focused-pane-styles` | PR candidate |
 | workspace id length test no longer depends on how many workspaces earlier tests allocated from the global counter | `a2450fc4` | `pr/workspace-id-test-isolation` | PR candidate; test-only |
+| `HERDR_BIN_PATH` in every pane, not just plugin commands, plugin panes, and custom command keybinds — panes already get the socket, so they can address the server but still have to guess a client, and the API rejects a protocol mismatch outright | `8e33cf9c` | `pr/pane-bin-path` | PR candidate |
+| `[ui.popup]`: fallback `width`/`height`/`chrome` for popups that declare none — the only way to resize a plugin manifest pane without editing the plugin. Modal chrome also grows the panel by its header rows instead of taking them out of the content, so one height means the same thing under either chrome | `a91ae2ec` | `pr/popup-geometry-defaults` | PR candidate; stacked on `pr/popup-modal-chrome` (needs `chrome`) and `pr/workspace-id-test-isolation` (its new tests trip the shared counter) |
 | `[hdev]` config overlay: tables under `[hdev]` are deep-merged over the matching top-level sections before the config is deserialized, so one `config.toml` works on both binaries — see below | `b858eaf9` | — | **fork-only, never upstream** |
 
 ### `[hdev]` config overlay
