@@ -1,3 +1,29 @@
+## fork changes (adkala/herdr)
+
+This fork carries the changes below on `master`. Each one is also staged on its
+own branch, cherry-picked onto the current `origin/master`
+([ogulcancelik/herdr](https://github.com/ogulcancelik/herdr)), so it can become
+an upstream PR without untangling anything. The staged branches are local-only
+until pushed.
+
+| change | commit on `master` | staged PR branch | notes |
+| --- | --- | --- | --- |
+| `advanced.escape_time_ms`: configurable lone-Escape flush delay, like tmux `escape-time` (default 10ms) | `d711242d` | `pr/escape-time-ms` | PR candidate |
+| `advanced.osc52_paste`: opt-in OSC 52 paste support — answers `OSC 52 ; c ; ?` clipboard read queries (off by default). `true`/`"server"` replies with the server machine's clipboard; `"terminal"` forwards the query to the local terminal so panes paste from the local clipboard over ssh | `39e37492`, `9fc58e61`, `9d525818` (e2e test), `07b31d49` (docs) | `pr/osc52-paste` | PR candidate |
+| macOS manual artifact builds install patched Homebrew `zig@0.15` instead of setup-zig | `17153442` | `pr/macos-manual-zig` | mainly serves this fork's `dev` prerelease builds; upstreamable if wanted |
+
+To open a PR later:
+
+```bash
+git push fork <branch>
+gh pr create --repo ogulcancelik/herdr --head adkala:<branch>
+```
+
+When adding a new change, commit it on a `pr/<slug>` branch based on
+`origin/master`, merge or cherry-pick it into `master`, and add a row here.
+
+---
+
 # herdr
 
 
