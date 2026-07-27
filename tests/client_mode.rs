@@ -640,6 +640,128 @@ fn client_receives_frame_after_pane_output() {
 }
 
 #[test]
+fn osc52_terminal_paste_round_trip_reaches_pane() {
+    // End-to-end test for `advanced.osc52_paste = "terminal"`:
+    // 1. A pane application emits an OSC 52 clipboard read query.
+    // 2. The server forwards it to the attached client as
+    //    ServerMessage::ClipboardQuery.
+    // 3. The client answers the way a real outer terminal would: an OSC 52
+    //    reply on its regular input stream.
+    // 4. The server routes the reply into the querying pane's PTY, where the
+    //    pane application reads it as its paste.
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+
+    fs::create_dir_all(config_home.join(app_dir_name())).unwrap();
+    fs::write(
+        config_home.join(app_dir_name()).join("config.toml"),
+        "onboarding = false\n[advanced]\nosc52_paste = \"terminal\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(&runtime_dir).unwrap();
+    register_runtime_dir(&runtime_dir);
+
+    // Spawn the server directly (not using spawn_server helper because it
+    // overwrites the config file with a minimal one).
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    cmd.arg("server");
+    cmd.env("XDG_CONFIG_HOME", &config_home);
+    cmd.env("XDG_RUNTIME_DIR", &runtime_dir);
+    cmd.env("HERDR_SOCKET_PATH", &api_socket);
+    cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
+    cmd.env("SHELL", "/bin/sh");
+    cmd.env_remove("HERDR_ENV");
+
+    let child = pair.slave.spawn_command(cmd).unwrap();
+    register_spawned_herdr_pid(child.process_id());
+    drop(pair.slave);
+
+    let spawned = SpawnedHerdr {
+        _master: Some(pair.master),
+        child,
+    };
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&client_socket, Duration::from_secs(10));
+
+    let mut stream = UnixStream::connect(&client_socket).expect("should connect");
+    let (version, error) =
+        client_handshake(&mut stream, CURRENT_PROTOCOL, 80, 24).expect("handshake should succeed");
+    assert_eq!(version, CURRENT_PROTOCOL);
+    assert!(error.is_none(), "{:?}", error);
+
+    // Drain initial frame(s).
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    while read_server_message(&mut stream).is_ok() {}
+
+    // base64("test-paste") relayed as the outer terminal's reply.
+    let expected_reply = b"\x1b]52;c;dGVzdC1wYXN0ZQ==\x07";
+    let reply_path = base.join("osc52-reply.bin");
+
+    // In the default pane's shell: switch the pane tty to raw so the reply is
+    // readable byte-by-byte, emit the query, and capture the exact reply
+    // bytes the pane receives.
+    let pane_command = format!(
+        "stty raw -echo; printf '\\033]52;c;?\\007'; dd bs=1 count={} of={} 2>/dev/null; stty sane\n",
+        expected_reply.len(),
+        reply_path.display()
+    );
+    let send_input = |stream: &mut UnixStream, data: &[u8]| {
+        let mut payload = encode_varint_u32(1); // Input variant
+        payload.extend_from_slice(&encode_varint_u32(data.len() as u32));
+        payload.extend_from_slice(data);
+        let framed = frame_message(&payload);
+        stream.write_all(&framed).expect("send input");
+        stream.flush().expect("flush input");
+    };
+    send_input(&mut stream, pane_command.as_bytes());
+
+    // The server must forward the pane's query to this foreground client as
+    // ServerMessage::ClipboardQuery (variant 12).
+    let got_query = wait_for_message_variant(&mut stream, Duration::from_secs(10), 12)
+        .expect("wait for clipboard query");
+    assert!(got_query, "should receive ServerMessage::ClipboardQuery");
+
+    // Answer like an OSC 52-capable terminal: the reply arrives as regular
+    // client input bytes.
+    send_input(&mut stream, expected_reply);
+
+    // The pane application must receive the reply on its PTY.
+    let reply_captured = wait_until(Duration::from_secs(10), Duration::from_millis(50), || {
+        fs::read(&reply_path)
+            .map(|data| data.len() >= expected_reply.len())
+            .unwrap_or(false)
+    });
+    assert!(
+        reply_captured,
+        "pane should capture the relayed reply bytes"
+    );
+    assert_eq!(
+        fs::read(&reply_path)
+            .expect("read captured reply")
+            .as_slice(),
+        &expected_reply[..],
+        "pane should receive the relayed OSC 52 reply"
+    );
+
+    cleanup_spawned_herdr(spawned, base);
+}
+
+#[test]
 fn pane_spawn_cwd_fallback_in_server() {
     // Pane spawn failure cwd fallback in server context.
     // This test verifies that the server can start even with invalid
