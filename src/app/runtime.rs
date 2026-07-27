@@ -1,7 +1,4 @@
-use std::time::Instant;
-
-#[cfg(test)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{
     background_update_check_enabled, App, AUTO_UPDATE_CHECK_INTERVAL, MIN_RENDER_INTERVAL,
@@ -21,7 +18,84 @@ fn retain_detached_process_after_wait(
     }
 }
 
+/// How long a pane waits for the host terminal to answer a forwarded OSC 52
+/// clipboard query before receiving an empty reply. Generous because some
+/// terminals (e.g. kitty) ask the user for permission on first read.
+pub(crate) const HOST_CLIPBOARD_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Upper bound on panes concurrently waiting for a host clipboard reply.
+/// Queries past the cap get an immediate empty reply instead of queueing.
+const MAX_PENDING_HOST_CLIPBOARD_QUERIES: usize = 16;
+
 impl App {
+    /// Records a pane waiting on a host clipboard reply. Returns false when
+    /// the pending queue is full; the caller must then answer the pane with
+    /// an empty reply instead of forwarding the query.
+    pub(crate) fn register_host_clipboard_query(&mut self, pane_id: crate::layout::PaneId) -> bool {
+        if self.pending_host_clipboard_queries.len() >= MAX_PENDING_HOST_CLIPBOARD_QUERIES {
+            return false;
+        }
+        self.pending_host_clipboard_queries
+            .push_back((pane_id, Instant::now() + HOST_CLIPBOARD_REPLY_TIMEOUT));
+        true
+    }
+
+    /// Routes a host terminal's OSC 52 reply to the oldest pane still waiting
+    /// on one. Replies with no pending query are dropped: herdr never wrote a
+    /// query, so nothing may be pasted into a pane from them.
+    pub(crate) fn resolve_host_clipboard_reply(&mut self, data: &str) {
+        let Some((pane_id, _deadline)) = self.pending_host_clipboard_queries.pop_front() else {
+            tracing::debug!("dropping host OSC 52 clipboard reply with no pending query");
+            return;
+        };
+        self.answer_pane_clipboard_query(pane_id, data);
+    }
+
+    /// Writes an OSC 52 paste reply built from `data` (base64, possibly
+    /// empty) into the pane's PTY.
+    pub(crate) fn answer_pane_clipboard_query(
+        &mut self,
+        pane_id: crate::layout::PaneId,
+        data: &str,
+    ) {
+        let reply = crate::pane::osc52_paste_reply_from_base64(data);
+        let Some(runtime) = self
+            .state
+            .runtime_for_pane(&self.terminal_runtimes, pane_id)
+        else {
+            tracing::debug!(
+                pane = pane_id.raw(),
+                "pane waiting on OSC 52 clipboard reply no longer exists"
+            );
+            return;
+        };
+        if let Err(err) = runtime.try_send_bytes(reply) {
+            tracing::warn!(
+                pane = pane_id.raw(),
+                err = %err,
+                "failed to write OSC 52 clipboard reply to pane"
+            );
+        }
+    }
+
+    /// Answers panes whose host clipboard reply deadline passed with an empty
+    /// reply so the waiting application unblocks.
+    pub(crate) fn expire_host_clipboard_queries(&mut self, now: Instant) {
+        while self
+            .pending_host_clipboard_queries
+            .front()
+            .is_some_and(|(_, deadline)| *deadline <= now)
+        {
+            if let Some((pane_id, _deadline)) = self.pending_host_clipboard_queries.pop_front() {
+                tracing::debug!(
+                    pane = pane_id.raw(),
+                    "host OSC 52 clipboard reply timed out; sending empty reply"
+                );
+                self.answer_pane_clipboard_query(pane_id, "");
+            }
+        }
+    }
+
     pub(crate) fn reap_finished_detached_processes(&mut self) {
         self.detached_process_children
             .retain_mut(|child| retain_detached_process_after_wait(child.id(), child.try_wait()));
@@ -249,5 +323,86 @@ mod tests {
             is_focused: true,
         });
         (app, pane_id)
+    }
+
+    fn test_app_with_pane_channel() -> (
+        super::super::App,
+        crate::layout::PaneId,
+        tokio::sync::mpsc::Receiver<bytes::Bytes>,
+    ) {
+        let (mut app, pane_id) = test_app_with_pane();
+        let (runtime, receiver) = crate::terminal::TerminalRuntime::test_with_channel_capacity(
+            80,
+            24,
+            MAX_PENDING_HOST_CLIPBOARD_QUERIES + 1,
+        );
+        app.state.workspaces[0].tabs[0]
+            .runtimes
+            .insert(pane_id, runtime);
+        (app, pane_id, receiver)
+    }
+
+    #[tokio::test]
+    async fn host_clipboard_reply_routes_to_oldest_pending_pane() {
+        let (mut app, pane_id, mut receiver) = test_app_with_pane_channel();
+
+        assert!(app.register_host_clipboard_query(pane_id));
+        app.resolve_host_clipboard_reply("aGVsbG8=");
+
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            bytes::Bytes::from_static(b"\x1b]52;c;aGVsbG8=\x07")
+        );
+        assert!(app.pending_host_clipboard_queries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn host_clipboard_reply_without_pending_query_writes_nothing() {
+        let (mut app, _pane_id, mut receiver) = test_app_with_pane_channel();
+
+        app.resolve_host_clipboard_reply("aGVsbG8=");
+
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn invalid_host_clipboard_reply_payload_answers_empty() {
+        let (mut app, pane_id, mut receiver) = test_app_with_pane_channel();
+
+        assert!(app.register_host_clipboard_query(pane_id));
+        app.resolve_host_clipboard_reply("not base64!");
+
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            bytes::Bytes::from_static(b"\x1b]52;c;\x07")
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_host_clipboard_queries_get_empty_replies() {
+        let (mut app, pane_id, mut receiver) = test_app_with_pane_channel();
+
+        assert!(app.register_host_clipboard_query(pane_id));
+        app.expire_host_clipboard_queries(Instant::now());
+        assert!(receiver.try_recv().is_err(), "deadline not reached yet");
+
+        app.expire_host_clipboard_queries(
+            Instant::now() + HOST_CLIPBOARD_REPLY_TIMEOUT + Duration::from_secs(1),
+        );
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            bytes::Bytes::from_static(b"\x1b]52;c;\x07")
+        );
+        assert!(app.pending_host_clipboard_queries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn host_clipboard_query_queue_is_bounded() {
+        let (mut app, pane_id, _receiver) = test_app_with_pane_channel();
+
+        for _ in 0..MAX_PENDING_HOST_CLIPBOARD_QUERIES {
+            assert!(app.register_host_clipboard_query(pane_id));
+        }
+        assert!(!app.register_host_clipboard_query(pane_id));
     }
 }

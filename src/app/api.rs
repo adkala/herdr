@@ -109,7 +109,9 @@ impl App {
         };
         if matches!(
             &ev,
-            AppEvent::TerminalBell { .. } | AppEvent::ClipboardWrite { .. }
+            AppEvent::TerminalBell { .. }
+                | AppEvent::ClipboardWrite { .. }
+                | AppEvent::ClipboardQuery { .. }
         ) {
             return Vec::new();
         }

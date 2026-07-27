@@ -290,6 +290,11 @@ impl ClientShellState {
                         }
                     }
                 }
+                RawInputEvent::HostClipboardReply { data } => {
+                    outcome
+                        .requests
+                        .push(ClientMessage::ClientShellHostClipboardReply { data });
+                }
                 RawInputEvent::HostDefaultColor { .. }
                 | RawInputEvent::HostPaletteColors { .. }
                 | RawInputEvent::HostCellSizeReport { .. }
