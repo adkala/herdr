@@ -1417,6 +1417,23 @@ mod tests {
     }
 
     #[test]
+    fn server_clipboard_query_wire_variant() {
+        // tests/client_mode.rs drives the client socket by raw variant index
+        // (SERVER_CLIPBOARD_QUERY_VARIANT) because it cannot name this enum.
+        let encoded = bincode::serde::encode_to_vec(
+            &ServerMessage::ClipboardQuery,
+            bincode::config::standard(),
+        )
+        .unwrap();
+        assert_eq!(
+            encoded,
+            vec![15],
+            "ServerMessage::ClipboardQuery moved on the wire; update \
+             SERVER_CLIPBOARD_QUERY_VARIANT in tests/client_mode.rs"
+        );
+    }
+
+    #[test]
     fn server_frame_roundtrip_nontrivial() {
         // Build a 3×2 frame with varied styles (≥2×2).
         let frame = FrameData {
