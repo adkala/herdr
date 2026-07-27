@@ -1573,6 +1573,10 @@ async fn run_client_loop(
                     forward_clipboard(&data);
                     let _ = io::stdout().flush();
                 }
+                ServerMessage::ClipboardQuery => {
+                    let _ = io::stdout().write_all(crate::selection::OSC52_CLIPBOARD_QUERY);
+                    let _ = io::stdout().flush();
+                }
                 ServerMessage::WindowTitle { title } => {
                     write_window_title(title.as_deref());
                     let _ = io::stdout().flush();

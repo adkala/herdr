@@ -138,6 +138,12 @@ pub enum RawInputEvent {
         colors: Vec<(u8, RgbColor)>,
     },
     HostColorSchemeChanged(HostAppearance),
+    /// The host terminal answered an OSC 52 clipboard read query
+    /// (`advanced.osc52_paste = "terminal"`). `data` is the base64 payload,
+    /// empty when the reply carried no clipboard data or overflowed.
+    HostClipboardReply {
+        data: String,
+    },
     Unsupported,
 }
 
@@ -211,10 +217,22 @@ pub(crate) struct RawInputByteFramer {
     held_pending_color_esc: bool,
     host_color_scheme_change_tracking: bool,
     split_coalesced_escape: bool,
+    /// An OSC 52 clipboard reply outgrew its buffer cap; consume its bytes
+    /// until the string terminator so the payload cannot leak as key input.
+    osc52_reply_overflow: bool,
 }
 
 const HOST_COLOR_QUERY_REPLIES: u16 = 258;
 const MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES: usize = 32;
+
+/// Upper bound on a buffered host OSC 52 clipboard reply. Larger replies are
+/// consumed and answered as empty so a runaway payload cannot grow the input
+/// buffer without bound or leak into pane input.
+const MAX_HOST_OSC52_REPLY_BYTES: usize = 512 * 1024;
+
+/// Synthetic empty OSC 52 reply chunk emitted when an oversized host reply is
+/// dropped, so the pane application waiting on the query still unblocks.
+const OSC52_EMPTY_REPLY_CHUNK: &[u8] = b"\x1b]52;c;\x07";
 
 impl RawInputByteFramer {
     pub(crate) fn for_host_input() -> Self {
@@ -267,6 +285,12 @@ impl RawInputByteFramer {
 
     pub(crate) fn flush_timeout(&mut self) -> Vec<Vec<u8>> {
         let mut chunks = self.drain_available_chunks();
+
+        if self.osc52_reply_overflow {
+            // Drain already dropped the overflowing bytes; keep consuming
+            // until the reply terminator instead of flushing input.
+            return chunks;
+        }
 
         if let Some(family) = self.discard_until {
             if family == ControlStringFamily::OrphanedSgrMouseTail {
@@ -335,6 +359,14 @@ impl RawInputByteFramer {
             tracing::trace!(
                 len = self.buffer.len(),
                 "waiting for host color response terminator"
+            );
+            return chunks;
+        }
+
+        if starts_with_incomplete_osc52_clipboard_reply(&self.buffer) {
+            tracing::trace!(
+                len = self.buffer.len(),
+                "waiting for host OSC 52 clipboard reply terminator"
             );
             return chunks;
         }
@@ -409,6 +441,35 @@ impl RawInputByteFramer {
         let mut chunks = Vec::new();
 
         loop {
+            if self.osc52_reply_overflow {
+                if let Some(end) = string_terminator_position(&self.buffer) {
+                    self.buffer.drain(..end);
+                    self.osc52_reply_overflow = false;
+                    chunks.push(OSC52_EMPTY_REPLY_CHUNK.to_vec());
+                    continue;
+                }
+                // Drop the payload bytes; keep a trailing ESC that may start
+                // a split ST terminator.
+                let keep_split_st = self.buffer.last() == Some(&ESC);
+                self.buffer.clear();
+                if keep_split_st {
+                    self.buffer.push(ESC);
+                }
+                break;
+            }
+
+            if self.buffer.len() > MAX_HOST_OSC52_REPLY_BYTES
+                && starts_with_incomplete_osc52_clipboard_reply(&self.buffer)
+            {
+                tracing::debug!(
+                    len = self.buffer.len(),
+                    "dropping oversized host OSC 52 clipboard reply"
+                );
+                self.osc52_reply_overflow = true;
+                self.buffer.clear();
+                continue;
+            }
+
             if self.lone_escape_recently_flushed {
                 if starts_with_incomplete_orphaned_sgr_mouse_tail(&self.buffer) {
                     break;
@@ -760,6 +821,10 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
             return Some((RawInputEvent::HostColorSchemeChanged(appearance), seq_len));
         }
 
+        if let Some(data) = parse_osc52_clipboard_reply(seq) {
+            return Some((RawInputEvent::HostClipboardReply { data }, seq_len));
+        }
+
         if let Some(mouse) = parse_sgr_mouse(seq) {
             return Some((RawInputEvent::Mouse(mouse), seq_len));
         }
@@ -812,6 +877,43 @@ fn starts_with_incomplete_default_color_response(buffer: &[u8]) -> bool {
             family: ControlStringFamily::Osc
         })
     ) && matches!(buffer.get(..5), Some(b"\x1b]10;" | b"\x1b]11;"))
+}
+
+fn starts_with_incomplete_osc52_clipboard_reply(buffer: &[u8]) -> bool {
+    matches!(
+        control_string(buffer),
+        Some(ControlString::Incomplete {
+            family: ControlStringFamily::Osc
+        })
+    ) && buffer.starts_with(b"\x1b]52;")
+}
+
+/// Parses a complete host OSC 52 reply (`ESC ] 52 ; <selector> ; <payload>`
+/// terminated by BEL or ST) into its payload. A `?` payload is a query shape,
+/// not clipboard data, and maps to an empty reply.
+fn parse_osc52_clipboard_reply(seq: &str) -> Option<String> {
+    let body = seq.strip_prefix("\x1b]52;")?;
+    let body = body
+        .strip_suffix('\x07')
+        .or_else(|| body.strip_suffix("\x1b\\"))?;
+    let (_selector, payload) = body.split_once(';')?;
+    if payload == "?" {
+        return Some(String::new());
+    }
+    Some(payload.to_string())
+}
+
+/// Position just past the first BEL or ST string terminator, if any.
+fn string_terminator_position(buffer: &[u8]) -> Option<usize> {
+    for (index, &byte) in buffer.iter().enumerate() {
+        if byte == 0x07 {
+            return Some(index + 1);
+        }
+        if byte == ESC && buffer.get(index + 1) == Some(&b'\\') {
+            return Some(index + 2);
+        }
+    }
+    None
 }
 
 fn starts_with_incomplete_host_color_scheme_report(buffer: &[u8]) -> bool {
@@ -2458,6 +2560,76 @@ mod tests {
 
         assert_eq!(chunks.len(), 11);
         assert!(framer.flush_timeout().is_empty());
+    }
+
+    #[test]
+    fn parses_host_osc52_clipboard_reply_with_bel_and_st() {
+        for chunk in [
+            &b"\x1b]52;c;aGVsbG8=\x07"[..],
+            &b"\x1b]52;c;aGVsbG8=\x1b\\"[..],
+        ] {
+            let mut framer = RawInputByteFramer::default();
+            let chunks = framer.push(chunk);
+            assert_eq!(chunks.len(), 1, "chunk {chunk:?}");
+            let (event, consumed) = extract_one_event(&chunks[0]).unwrap();
+            assert_eq!(consumed, chunk.len());
+            match event {
+                RawInputEvent::HostClipboardReply { data } => assert_eq!(data, "aGVsbG8="),
+                other => panic!("expected clipboard reply, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn stitches_host_osc52_clipboard_reply_split_across_reads() {
+        let mut framer = RawInputByteFramer::default();
+
+        assert!(framer.push(b"\x1b]52;c;aGVs").is_empty());
+        // The idle flush must hold the partial reply instead of discarding it.
+        assert!(framer.flush_timeout().is_empty());
+        let chunks = framer.push(b"bG8=\x07");
+
+        assert_eq!(chunks.len(), 1);
+        let (event, _) = extract_one_event(&chunks[0]).unwrap();
+        match event {
+            RawInputEvent::HostClipboardReply { data } => assert_eq!(data, "aGVsbG8="),
+            other => panic!("expected clipboard reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn host_osc52_query_shape_maps_to_empty_reply() {
+        let mut framer = RawInputByteFramer::default();
+        let chunks = framer.push(b"\x1b]52;c;?\x07");
+        assert_eq!(chunks.len(), 1);
+        let (event, _) = extract_one_event(&chunks[0]).unwrap();
+        match event {
+            RawInputEvent::HostClipboardReply { data } => assert!(data.is_empty()),
+            other => panic!("expected clipboard reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oversized_host_osc52_reply_is_consumed_and_answered_empty() {
+        let mut framer = RawInputByteFramer::default();
+
+        let mut oversized = Vec::from(&b"\x1b]52;c;"[..]);
+        oversized.extend(vec![b'A'; MAX_HOST_OSC52_REPLY_BYTES + 1]);
+        assert!(framer.push(&oversized).is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        // More payload streams in and is dropped without leaking as input.
+        assert!(framer.push(&vec![b'B'; 4096]).is_empty());
+
+        let chunks = framer.push(b"end\x07keep");
+        assert_eq!(chunks.len(), 5);
+        let (event, _) = extract_one_event(&chunks[0]).unwrap();
+        match event {
+            RawInputEvent::HostClipboardReply { data } => assert!(data.is_empty()),
+            other => panic!("expected empty clipboard reply, got {other:?}"),
+        }
+        // Input after the reply terminator flows through unharmed.
+        assert_eq!(chunks[1], b"k".to_vec());
+        assert_eq!(chunks[4], b"p".to_vec());
     }
 
     #[test]

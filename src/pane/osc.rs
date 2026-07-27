@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use bytes::Bytes;
 
@@ -626,17 +626,44 @@ fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
     sanitized
 }
 
+/// How OSC 52 clipboard read queries (paste) are answered. Mirrors
+/// `advanced.osc52_paste`; kept as a pane-layer type so the PTY path does not
+/// depend on config model types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Osc52PasteMode {
+    /// Ignore queries (previous behavior).
+    Off,
+    /// Answer inline with the clipboard of the machine running the server.
+    ServerClipboard,
+    /// Forward the query to the attached client's outer terminal and relay
+    /// its reply asynchronously.
+    HostTerminal,
+}
+
 /// Global opt-in for answering OSC 52 clipboard read queries (paste). Set from
 /// `advanced.osc52_paste` at startup and on config reload, read on the pane
 /// PTY path. Off keeps the previous behavior: queries are silently ignored.
-static OSC52_PASTE_ENABLED: AtomicBool = AtomicBool::new(false);
+static OSC52_PASTE_MODE: AtomicU8 = AtomicU8::new(OSC52_PASTE_MODE_OFF);
 
-pub(crate) fn set_osc52_paste_enabled(enabled: bool) {
-    OSC52_PASTE_ENABLED.store(enabled, Ordering::Relaxed);
+const OSC52_PASTE_MODE_OFF: u8 = 0;
+const OSC52_PASTE_MODE_SERVER: u8 = 1;
+const OSC52_PASTE_MODE_TERMINAL: u8 = 2;
+
+pub(crate) fn set_osc52_paste_mode(mode: Osc52PasteMode) {
+    let value = match mode {
+        Osc52PasteMode::Off => OSC52_PASTE_MODE_OFF,
+        Osc52PasteMode::ServerClipboard => OSC52_PASTE_MODE_SERVER,
+        Osc52PasteMode::HostTerminal => OSC52_PASTE_MODE_TERMINAL,
+    };
+    OSC52_PASTE_MODE.store(value, Ordering::Relaxed);
 }
 
-pub(super) fn osc52_paste_enabled() -> bool {
-    OSC52_PASTE_ENABLED.load(Ordering::Relaxed)
+pub(super) fn osc52_paste_mode() -> Osc52PasteMode {
+    match OSC52_PASTE_MODE.load(Ordering::Relaxed) {
+        OSC52_PASTE_MODE_SERVER => Osc52PasteMode::ServerClipboard,
+        OSC52_PASTE_MODE_TERMINAL => Osc52PasteMode::HostTerminal,
+        _ => Osc52PasteMode::Off,
+    }
 }
 
 /// Upper bound on clipboard text answered to an OSC 52 read query. Larger
@@ -763,7 +790,25 @@ fn is_osc52_clipboard_query(body: &[u8]) -> bool {
 /// Builds the OSC 52 paste reply: `ESC ] 52 ; c ; <base64(text)> BEL`. A
 /// failed read (`None`) or oversized clipboard replies with an empty payload
 /// so a waiting application unblocks instead of timing out.
-pub(super) fn osc52_paste_reply(clipboard_text: Option<String>) -> Bytes {
+/// Builds an OSC 52 paste reply from an already base64-encoded payload
+/// relayed from the attached client's outer terminal. Invalid or oversized
+/// payloads reply empty so a waiting application unblocks with no paste.
+pub(crate) fn osc52_paste_reply_from_base64(payload: &str) -> Bytes {
+    const MAX_BASE64_LEN: usize = OSC52_PASTE_MAX_TEXT_BYTES / 3 * 4 + 4;
+    let valid = !payload.is_empty()
+        && payload.len() <= MAX_BASE64_LEN
+        && payload
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='));
+    let mut reply = Vec::from(&b"\x1b]52;c;"[..]);
+    if valid {
+        reply.extend_from_slice(payload.as_bytes());
+    }
+    reply.push(0x07);
+    Bytes::from(reply)
+}
+
+pub(crate) fn osc52_paste_reply(clipboard_text: Option<String>) -> Bytes {
     use base64::Engine;
     let mut reply = Vec::from(&b"\x1b]52;c;"[..]);
     if let Some(text) = clipboard_text {
@@ -1740,6 +1785,22 @@ mod tests {
         assert_eq!(
             osc52_paste_reply(Some("hello".to_string())),
             Bytes::from_static(b"\x1b]52;c;aGVsbG8=\x07")
+        );
+    }
+
+    #[test]
+    fn osc52_paste_reply_from_base64_relays_valid_payloads() {
+        assert_eq!(
+            osc52_paste_reply_from_base64("aGVsbG8="),
+            Bytes::from_static(b"\x1b]52;c;aGVsbG8=\x07")
+        );
+
+        let empty = Bytes::from_static(b"\x1b]52;c;\x07");
+        assert_eq!(osc52_paste_reply_from_base64(""), empty);
+        assert_eq!(osc52_paste_reply_from_base64("not base64!"), empty);
+        assert_eq!(
+            osc52_paste_reply_from_base64(&"A".repeat(OSC52_PASTE_MAX_TEXT_BYTES / 3 * 4 + 5)),
+            empty
         );
     }
 

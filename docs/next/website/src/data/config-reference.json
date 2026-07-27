@@ -1067,9 +1067,14 @@
         },
         {
           "key": "advanced.osc52_paste",
-          "type": "boolean",
+          "type": "boolean | string",
           "default": "false",
-          "description": "Answer OSC 52 clipboard read queries (`ESC ] 52 ; c ; ?`) from pane applications with the clipboard of the machine running the Herdr server, base64-encoded. Off by default because enabling lets any process running in a pane read the clipboard invisibly; queries are ignored while disabled. Clipboard writes via OSC 52 are always supported and unaffected by this key."
+          "description": "Answer OSC 52 clipboard read queries (`ESC ] 52 ; c ; ?`) from pane applications. `true` (or `\"server\"`) answers with the clipboard of the machine running the Herdr server. `\"terminal\"` forwards the query to the terminal Herdr is displayed in and relays its reply, so panes paste from your local clipboard even when Herdr runs on an ssh remote; the terminal must support OSC 52 reads and may prompt for permission, and panes get an empty reply after a 5s timeout. Off by default because enabling lets any process running in a pane read the clipboard invisibly; queries are ignored while disabled. Clipboard writes via OSC 52 are always supported and unaffected by this key.",
+          "values": [
+            "off",
+            "server",
+            "terminal"
+          ]
         }
       ]
     },
