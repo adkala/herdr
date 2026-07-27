@@ -42,7 +42,7 @@ use self::agent_detection::{
     ScreenDetectionPublishInput, AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
 };
 use self::background_agent::{AgentJobStatus, AgentJobTracker};
-pub(crate) use self::osc::set_osc52_paste_enabled;
+pub(crate) use self::osc::{osc52_paste_reply_from_base64, set_osc52_paste_mode, Osc52PasteMode};
 #[cfg(test)]
 pub(crate) use self::terminal::test_encode_key_for_app;
 #[cfg(unix)]
@@ -2621,6 +2621,15 @@ impl PaneRuntime {
                         );
                     }
                 }
+                for _ in 0..result.host_clipboard_queries {
+                    if let Err(err) = read_events.try_send(AppEvent::ClipboardQuery { pane_id }) {
+                        warn!(
+                            pane = pane_id.raw(),
+                            err = %err,
+                            "failed to queue OSC 52 clipboard query"
+                        );
+                    }
+                }
                 PtyReadResult {
                     terminal_responses: result.terminal_responses,
                 }
@@ -2823,6 +2832,15 @@ impl PaneRuntime {
                             pane = pane_id.raw(),
                             err = %err,
                             "failed to send OSC 52 clipboard write"
+                        );
+                    }
+                }
+                for _ in 0..result.host_clipboard_queries {
+                    if let Err(err) = events.try_send(AppEvent::ClipboardQuery { pane_id }) {
+                        warn!(
+                            pane = pane_id.raw(),
+                            err = %err,
+                            "failed to send OSC 52 clipboard query"
                         );
                     }
                 }
