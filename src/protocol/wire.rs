@@ -753,6 +753,11 @@ pub enum ServerMessage {
 
     /// Suppress a direct command that expired before terminal delivery.
     GraphicsTransmissionRetired { transfer_id: u64, image_id: u32 },
+
+    /// Ask the foreground client to query its outer terminal's clipboard with
+    /// OSC 52 (`advanced.osc52_paste = "terminal"`). The terminal's reply
+    /// flows back through the client's regular input stream.
+    ClipboardQuery,
 }
 
 // ---------------------------------------------------------------------------
@@ -1396,6 +1401,15 @@ mod tests {
             encoding: RenderEncoding::SemanticFrame,
             error: Some("incompatible version".to_owned()),
         };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        let (decoded, _): (ServerMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn server_clipboard_query_roundtrip() {
+        let msg = ServerMessage::ClipboardQuery;
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();

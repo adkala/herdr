@@ -30,11 +30,11 @@ use super::{
     kitty_keyboard::KittyKeyboardTracker,
     osc::{
         contains_scrollback_clear_sequence, current_transient_default_color_owner,
-        maybe_filter_primary_screen_scrollback_clear, osc52_paste_enabled, osc52_paste_reply,
+        maybe_filter_primary_screen_scrollback_clear, osc52_paste_mode, osc52_paste_reply,
         parse_reported_cwd, restore_host_terminal_theme_if_needed,
         write_host_terminal_theme_selective, AgentOscStateTracker, DefaultColorEvent,
         DefaultColorEventTracker, DefaultColorOscTracker, DefaultColorQuery,
-        DefaultColorTrackedEvent, Osc52QueryTracker, OscDebugTracker,
+        DefaultColorTrackedEvent, Osc52PasteMode, Osc52QueryTracker, OscDebugTracker,
     },
     xtgettcap::{XtgettcapQueryTracker, XtgettcapResponse},
 };
@@ -153,6 +153,10 @@ pub(crate) struct ProcessBytesResult {
     pub terminal_title_changed: bool,
     pub terminal_bells: u16,
     pub clipboard_writes: Vec<Vec<u8>>,
+    /// OSC 52 clipboard read queries to answer via the attached client's
+    /// outer terminal (`advanced.osc52_paste = "terminal"`). The pane read
+    /// loop emits one `AppEvent::ClipboardQuery` per counted query.
+    pub host_clipboard_queries: usize,
     pub reported_cwd: Option<std::path::PathBuf>,
     pub terminal_responses: Vec<Bytes>,
 }
@@ -1232,6 +1236,7 @@ impl GhosttyPaneTerminal {
                 terminal_title_changed: false,
                 terminal_bells: 0,
                 clipboard_writes: Vec::new(),
+                host_clipboard_queries: 0,
                 reported_cwd: None,
                 terminal_responses: Vec::new(),
             };
@@ -1294,14 +1299,23 @@ impl GhosttyPaneTerminal {
             .observe(filtered_bytes.as_ref());
         core.xtgettcap_query_tracker
             .observe(filtered_bytes.as_ref());
-        if osc52_paste_enabled() {
+        let osc52_mode = osc52_paste_mode();
+        if osc52_mode != Osc52PasteMode::Off {
             core.osc52_query_tracker.observe(filtered_bytes.as_ref());
         }
         core.decscusr_tracker.observe(filtered_bytes.as_ref());
         let in_progress_default_color_event = core.default_color_event_tracker.in_progress_event();
         let default_color_events = core.default_color_event_tracker.drain_pending();
         let xtgettcap_responses = core.xtgettcap_query_tracker.drain_pending();
-        let osc52_query_offsets = core.osc52_query_tracker.drain_pending();
+        let mut osc52_query_offsets = core.osc52_query_tracker.drain_pending();
+        // In terminal-forward mode the reply arrives asynchronously from the
+        // attached client, so queries leave here as counted events instead of
+        // inline ordered responses.
+        let mut host_clipboard_queries = 0;
+        if osc52_mode == Osc52PasteMode::HostTerminal {
+            host_clipboard_queries = osc52_query_offsets.len();
+            osc52_query_offsets.clear();
+        }
         let write_started = crate::render_prof::timer();
         self.write_pty_bytes_with_ordered_responses(
             &mut core,
@@ -1372,6 +1386,7 @@ impl GhosttyPaneTerminal {
             terminal_title_changed,
             terminal_bells,
             clipboard_writes,
+            host_clipboard_queries,
             reported_cwd,
             terminal_responses,
         }
@@ -5813,7 +5828,7 @@ mod tests {
 
     #[test]
     fn process_pty_bytes_ignores_osc52_query_when_paste_disabled() {
-        super::super::osc::set_osc52_paste_enabled(false);
+        super::super::osc::set_osc52_paste_mode(super::super::osc::Osc52PasteMode::Off);
         set_osc52_test_clipboard(Some("secret".to_string()));
         let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();
@@ -5827,7 +5842,7 @@ mod tests {
 
     #[test]
     fn process_pty_bytes_answers_osc52_query_with_clipboard_when_enabled() {
-        super::super::osc::set_osc52_paste_enabled(true);
+        super::super::osc::set_osc52_paste_mode(super::super::osc::Osc52PasteMode::ServerClipboard);
         set_osc52_test_clipboard(Some("hello".to_string()));
         let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();
@@ -5843,8 +5858,23 @@ mod tests {
     }
 
     #[test]
+    fn process_pty_bytes_counts_osc52_query_in_terminal_mode_without_inline_reply() {
+        super::super::osc::set_osc52_paste_mode(super::super::osc::Osc52PasteMode::HostTerminal);
+        set_osc52_test_clipboard(Some("secret".to_string()));
+        let (tx, mut rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+
+        let result = pane.process_pty_bytes(PaneId::from_raw(1), 0, b"\x1b]52;c;?\x07", &tx);
+
+        assert_eq!(result.host_clipboard_queries, 1);
+        assert!(result.terminal_responses.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn process_pty_bytes_answers_osc52_query_split_across_chunks() {
-        super::super::osc::set_osc52_paste_enabled(true);
+        super::super::osc::set_osc52_paste_mode(super::super::osc::Osc52PasteMode::ServerClipboard);
         set_osc52_test_clipboard(Some("hello".to_string()));
         let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();
@@ -5865,7 +5895,7 @@ mod tests {
     fn process_pty_bytes_orders_osc52_reply_before_following_device_attribute_reply() {
         // vim and tmux send a DA1 fence right after an OSC 52 query and treat
         // a DA1 reply arriving first as "no clipboard coming".
-        super::super::osc::set_osc52_paste_enabled(true);
+        super::super::osc::set_osc52_paste_mode(super::super::osc::Osc52PasteMode::ServerClipboard);
         set_osc52_test_clipboard(Some("hello".to_string()));
         let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();
@@ -5883,7 +5913,7 @@ mod tests {
 
     #[test]
     fn process_pty_bytes_answers_osc52_query_with_empty_payload_when_clipboard_unreadable() {
-        super::super::osc::set_osc52_paste_enabled(true);
+        super::super::osc::set_osc52_paste_mode(super::super::osc::Osc52PasteMode::ServerClipboard);
         set_osc52_test_clipboard(None);
         let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();

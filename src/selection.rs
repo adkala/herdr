@@ -263,6 +263,10 @@ fn clamp_to_pane(screen_col: u16, screen_row: u16, pane_inner: Rect) -> (u16, u1
     (clamped_row - pane_inner.y, clamped_col - pane_inner.x)
 }
 
+/// OSC 52 clipboard read query answered by the host terminal with the local
+/// clipboard when `advanced.osc52_paste = "terminal"` forwards pane queries.
+pub const OSC52_CLIPBOARD_QUERY: &[u8] = b"\x1b]52;c;?\x07";
+
 fn osc52_sequence(bytes: &[u8]) -> String {
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
