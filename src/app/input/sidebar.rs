@@ -1263,7 +1263,10 @@ mod tests {
         app.state.mode = Mode::Terminal;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
         let parent = app.state.view.workspace_card_areas[0];
-        let chevron = crate::ui::workspace_group_chevron_rect(&parent);
+        let chevron = crate::ui::workspace_group_chevron_rect(
+            &parent,
+            app.state.sidebar_worktree_connectors,
+        );
 
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),

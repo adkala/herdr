@@ -718,17 +718,24 @@ pub(crate) fn compute_workspace_card_areas(
     compute_workspace_list_areas(app, area).0
 }
 
-pub(crate) fn workspace_group_chevron_rect(card: &crate::app::state::WorkspaceCardArea) -> Rect {
+pub(crate) fn workspace_group_chevron_rect(
+    card: &crate::app::state::WorkspaceCardArea,
+    connectors: bool,
+) -> Rect {
     if card.rect.width == 0 || card.rect.height == 0 {
         return Rect::default();
     }
 
-    Rect::new(
-        card.rect.x + card.rect.width.saturating_sub(1),
-        card.rect.y,
-        1,
-        1,
-    )
+    if connectors {
+        Rect::new(
+            card.rect.x + card.rect.width.saturating_sub(1),
+            card.rect.y,
+            1,
+            1,
+        )
+    } else {
+        Rect::new(card.rect.x, card.rect.y, 1, 1)
+    }
 }
 
 /// Auto-scale sidebar width based on workspace identity + agent summary.
@@ -1310,7 +1317,30 @@ fn render_workspace_list(
                 break;
             }
             let mut spans = Vec::new();
-            let prefix_width = if card.indented {
+            let prefix_width = if !app.sidebar_worktree_connectors {
+                if row_index == 0 {
+                    if card.indented {
+                        spans.push(Span::raw("   "));
+                        3
+                    } else if let Some((_, collapsed)) = parent_group.as_ref() {
+                        spans.push(Span::styled(
+                            if *collapsed { "▸" } else { "▾" },
+                            Style::default().fg(p.accent),
+                        ));
+                        spans.push(Span::raw(" "));
+                        2
+                    } else {
+                        spans.push(Span::raw(" "));
+                        1
+                    }
+                } else if card.indented {
+                    spans.push(Span::raw("     "));
+                    5
+                } else {
+                    spans.push(Span::raw("   "));
+                    3
+                }
+            } else if card.indented {
                 spans.push(Span::raw("   "));
                 if row_index == 0 {
                     spans.push(Span::styled(
@@ -1333,11 +1363,12 @@ fn render_workspace_list(
                 spans.push(Span::raw("   "));
                 3
             };
-            let trailing_width = if row_index == 0 && parent_group.is_some() {
-                2
-            } else {
-                0
-            };
+            let trailing_width =
+                if row_index == 0 && parent_group.is_some() && app.sidebar_worktree_connectors {
+                    2
+                } else {
+                    0
+                };
             spans.extend(resolved_token_spans(
                 resolved,
                 state_icon,
@@ -1356,14 +1387,16 @@ fn render_workspace_list(
             );
         }
 
-        if let Some((_, collapsed)) = parent_group {
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    if collapsed { "▸" } else { "▾" },
-                    Style::default().fg(p.accent),
-                )),
-                workspace_group_chevron_rect(card),
-            );
+        if app.sidebar_worktree_connectors {
+            if let Some((_, collapsed)) = parent_group {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        if collapsed { "▸" } else { "▾" },
+                        Style::default().fg(p.accent),
+                    )),
+                    workspace_group_chevron_rect(card, true),
+                );
+            }
         }
     }
 
@@ -2435,6 +2468,53 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             buffer[(cards[0].rect.x + cards[0].rect.width - 1, cards[0].rect.y)].symbol(),
             "▾"
         );
+    }
+
+    #[test]
+    fn disabled_worktree_connectors_restore_flat_indent_style() {
+        let mut app = AppState::test_new();
+        app.sidebar_worktree_connectors = false;
+        app.workspaces = vec![
+            workspace_with_worktree_space("main", Some("repo-key"), "/repo/herdr"),
+            workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
+            workspace_with_worktree_space("review", Some("repo-key"), "/repo/herdr-review"),
+        ];
+        app.sidebar_spaces.rows = vec![vec![
+            crate::config::SpaceSidebarToken::StateIcon,
+            crate::config::SpaceSidebarToken::Workspace,
+        ]];
+        app.sidebar_spaces.row_gap = 0;
+        let area = Rect::new(0, 0, 30, 20);
+        app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
+        let list_area = workspace_list_rect(area, app.sidebar_section_split);
+
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_workspace_list(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    list_area,
+                    false,
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let cards = &app.view.workspace_card_areas;
+        // Parent row leads with the chevron instead of trailing it.
+        assert_eq!(buffer[(cards[0].rect.x, cards[0].rect.y)].symbol(), "▾");
+        assert_ne!(
+            buffer[(cards[0].rect.x + cards[0].rect.width - 1, cards[0].rect.y)].symbol(),
+            "▾"
+        );
+        // Children keep the flat three-space indent with no tree connectors.
+        for card in &cards[1..3] {
+            assert_eq!(buffer[(card.rect.x, card.rect.y)].symbol(), " ");
+            assert_ne!(buffer[(card.rect.x + 3, card.rect.y)].symbol(), "├");
+            assert_ne!(buffer[(card.rect.x + 3, card.rect.y)].symbol(), "└");
+        }
     }
 
     #[test]

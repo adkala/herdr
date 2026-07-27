@@ -564,7 +564,10 @@ impl AppState {
                         self.view.workspace_card_areas.clone()
                     };
                     if let Some(card) = cards.iter().find(|card| {
-                        let chevron = crate::ui::workspace_group_chevron_rect(card);
+                        let chevron = crate::ui::workspace_group_chevron_rect(
+                            card,
+                            self.sidebar_worktree_connectors,
+                        );
                         mouse.row == chevron.y && mouse.column == chevron.x && chevron.width > 0
                     }) {
                         if let Some((key, collapsed)) =

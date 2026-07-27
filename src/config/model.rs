@@ -784,6 +784,10 @@ pub struct UiConfig {
     pub sidebar_start_collapsed: bool,
     /// Collapsed sidebar presentation. Default: compact.
     pub sidebar_collapsed_mode: SidebarCollapsedModeConfig,
+    /// Draw tree connectors (├─/└─) and a trailing group chevron for worktree
+    /// children in the spaces sidebar. `false` restores the flat indent style
+    /// with a leading group chevron. Default: true.
+    pub sidebar_worktree_connectors: bool,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -1068,6 +1072,7 @@ impl Default for UiConfig {
             sidebar_max_width: 36,
             sidebar_start_collapsed: false,
             sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
+            sidebar_worktree_connectors: true,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,
@@ -1328,6 +1333,19 @@ hide_tab_bar_when_single_tab = true
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);
         assert!(config.ui.hide_tab_bar_when_single_tab);
+    }
+
+    #[test]
+    fn sidebar_worktree_connectors_defaults_and_parses() {
+        let default_config = Config::default();
+        assert!(default_config.ui.sidebar_worktree_connectors);
+
+        let toml = r#"
+[ui]
+sidebar_worktree_connectors = false
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.ui.sidebar_worktree_connectors);
     }
 
     #[test]

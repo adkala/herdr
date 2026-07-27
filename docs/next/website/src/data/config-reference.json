@@ -582,6 +582,12 @@
           ]
         },
         {
+          "key": "ui.sidebar_worktree_connectors",
+          "type": "boolean",
+          "default": "true",
+          "description": "Draw tree connectors and a trailing group chevron for worktree children in the spaces sidebar. Set false to restore the flat indent style with a leading group chevron."
+        },
+        {
           "key": "ui.mobile_width_threshold",
           "type": "integer",
           "default": "64",
