@@ -131,6 +131,13 @@ impl App {
             return Vec::new();
         }
 
+        if let AppEvent::ClipboardQuery { pane_id } = ev {
+            // Server mode intercepts this event in the forwarding drain; this
+            // path is the monolithic app that owns the host terminal itself.
+            self.forward_clipboard_query_to_host_terminal(pane_id);
+            return Vec::new();
+        }
+
         if let AppEvent::PrefixInputSource { active } = ev {
             // Monolithic path applies the switch here. Server mode forwards it to the foreground
             // client instead (see HeadlessServer::handle_internal_event_with_forwarding); should an
