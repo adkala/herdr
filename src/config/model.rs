@@ -804,8 +804,11 @@ pub struct UiConfig {
     pub prompt_new_tab_name: bool,
     /// Ask for a workspace name before interactive creation. Default: false.
     pub prompt_new_workspace_name: bool,
-    /// Draw borders around split panes. Default: true.
-    pub pane_borders: bool,
+    /// Draw borders around split panes: `true`, `false`, or `"between"` to
+    /// draw only the shared divider between panes (no outer frame), like
+    /// tmux. `"between"` implies shared dividers, so `pane_gaps` is ignored.
+    /// Default: true.
+    pub pane_borders: PaneBordersConfig,
     /// Keep split panes visually separated instead of sharing divider borders. Default: true.
     pub pane_gaps: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
@@ -823,6 +826,76 @@ pub struct UiConfig {
     pub toast: ToastConfig,
     /// Play sounds when agents change state in background workspaces.
     pub sound: SoundConfig,
+}
+
+/// Parsed `ui.pane_borders` value: `true` | `false` | `"between"`. The
+/// boolean forms are the original toggle; `"between"` draws only the shared
+/// dividers between panes, leaving the outer perimeter borderless like tmux.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PaneBordersConfig {
+    /// Draw full borders around every split pane (previous `true`).
+    #[default]
+    On,
+    /// Draw no pane borders at all (previous `false`).
+    Off,
+    /// Draw only shared split dividers; no outer frame.
+    Between,
+}
+
+impl PaneBordersConfig {
+    /// Whether any pane borders are drawn.
+    pub fn enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    /// Whether only shared split dividers are drawn.
+    pub fn between_only(self) -> bool {
+        matches!(self, Self::Between)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PaneBordersConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct PaneBordersVisitor;
+
+        impl serde::de::Visitor<'_> for PaneBordersVisitor {
+            type Value = PaneBordersConfig;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("true, false, \"on\", \"off\", or \"between\"")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(if value {
+                    PaneBordersConfig::On
+                } else {
+                    PaneBordersConfig::Off
+                })
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match value {
+                    "on" | "true" => Ok(PaneBordersConfig::On),
+                    "off" | "false" => Ok(PaneBordersConfig::Off),
+                    "between" => Ok(PaneBordersConfig::Between),
+                    other => Err(E::custom(format!(
+                        "invalid pane_borders value '{other}'; expected true, false, or \"between\""
+                    ))),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(PaneBordersVisitor)
+    }
 }
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.
@@ -1010,7 +1083,7 @@ impl Default for UiConfig {
             confirm_close: true,
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
-            pane_borders: true,
+            pane_borders: PaneBordersConfig::On,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
@@ -1241,7 +1314,7 @@ agent_panel_scope = "current"
     #[test]
     fn pane_appearance_defaults_and_parse() {
         let default_config = Config::default();
-        assert!(default_config.ui.pane_borders);
+        assert_eq!(default_config.ui.pane_borders, PaneBordersConfig::On);
         assert!(default_config.ui.pane_gaps);
         assert!(!default_config.ui.show_agent_labels_on_pane_borders);
         assert!(!default_config.ui.hide_tab_bar_when_single_tab);
@@ -1254,10 +1327,30 @@ show_agent_labels_on_pane_borders = true
 hide_tab_bar_when_single_tab = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
-        assert!(!config.ui.pane_borders);
+        assert_eq!(config.ui.pane_borders, PaneBordersConfig::Off);
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);
         assert!(config.ui.hide_tab_bar_when_single_tab);
+    }
+
+    #[test]
+    fn pane_borders_between_parses_from_string() {
+        let toml = r#"
+[ui]
+pane_borders = "between"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.pane_borders, PaneBordersConfig::Between);
+        assert!(config.ui.pane_borders.enabled());
+        assert!(config.ui.pane_borders.between_only());
+
+        assert!(toml::from_str::<Config>(
+            r#"
+[ui]
+pane_borders = "fancy"
+"#
+        )
+        .is_err());
     }
 
     #[test]

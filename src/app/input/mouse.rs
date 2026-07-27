@@ -1369,24 +1369,26 @@ impl AppState {
     }
 
     pub(super) fn find_border_at(&self, col: u16, row: u16) -> Option<&SplitBorder> {
+        // Between-only borders behave like shared dividers for hit-testing.
+        let pane_gaps = self.pane_gaps && !self.pane_border_between_only;
         self.view.split_borders.iter().find(|b| match b.direction {
-            Direction::Horizontal if self.pane_borders && !self.pane_gaps => {
+            Direction::Horizontal if self.pane_borders && !pane_gaps => {
                 col == b.pos && row >= b.area.y && row < b.area.y + b.area.height
             }
-            Direction::Horizontal if self.pane_borders && self.pane_gaps => {
+            Direction::Horizontal if self.pane_borders && pane_gaps => {
                 row >= b.area.y
                     && row < b.area.y + b.area.height
                     && col >= b.pos.saturating_sub(1)
                     && col <= b.pos
             }
-            Direction::Horizontal if !self.pane_borders && self.pane_gaps => {
+            Direction::Horizontal if !self.pane_borders && pane_gaps => {
                 row >= b.area.y
                     && row < b.area.y + b.area.height
                     && b.pos.checked_sub(1).is_some_and(|gap_col| {
                         col == gap_col && self.pane_frame_at(col, row).is_none()
                     })
             }
-            Direction::Vertical if self.pane_borders && !self.pane_gaps => {
+            Direction::Vertical if self.pane_borders && !pane_gaps => {
                 row == b.pos && col >= b.area.x && col < b.area.x + b.area.width
             }
             Direction::Vertical if self.pane_borders && self.pane_gaps => {
@@ -1395,7 +1397,7 @@ impl AppState {
                     && row >= b.pos.saturating_sub(1)
                     && row <= b.pos
             }
-            Direction::Vertical if !self.pane_borders && self.pane_gaps => {
+            Direction::Vertical if !self.pane_borders && pane_gaps => {
                 col >= b.area.x
                     && col < b.area.x + b.area.width
                     && b.pos.checked_sub(1).is_some_and(|gap_row| {

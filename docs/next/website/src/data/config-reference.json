@@ -648,9 +648,14 @@
         },
         {
           "key": "ui.pane_borders",
-          "type": "boolean",
-          "default": "true",
-          "description": "Draw borders around split panes."
+          "type": "enum",
+          "default": "on",
+          "description": "Draw borders around split panes: true/on, false/off, or \"between\" to draw only the shared split dividers with no outer frame, like tmux. \"between\" implies shared dividers, so ui.pane_gaps is ignored.",
+          "values": [
+            "on",
+            "off",
+            "between"
+          ]
         },
         {
           "key": "ui.pane_gaps",

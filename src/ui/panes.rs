@@ -79,6 +79,27 @@ fn pane_below<'a>(info: &PaneInfo, panes: &'a [PaneInfo]) -> Option<&'a PaneInfo
     })
 }
 
+fn pane_to_left<'a>(info: &PaneInfo, panes: &'a [PaneInfo]) -> Option<&'a PaneInfo> {
+    panes.iter().find(|other| {
+        other.id != info.id
+            && other.rect.x.saturating_add(other.rect.width) == info.rect.x
+            && ranges_overlap(
+                info.rect.y,
+                info.rect.height,
+                other.rect.y,
+                other.rect.height,
+            )
+    })
+}
+
+fn pane_above<'a>(info: &PaneInfo, panes: &'a [PaneInfo]) -> Option<&'a PaneInfo> {
+    panes.iter().find(|other| {
+        other.id != info.id
+            && other.rect.y.saturating_add(other.rect.height) == info.rect.y
+            && ranges_overlap(info.rect.x, info.rect.width, other.rect.x, other.rect.width)
+    })
+}
+
 fn shrink_for_one_cell_gap(size: u16) -> u16 {
     if size > 1 {
         size - 1
@@ -91,6 +112,7 @@ pub(crate) fn apply_pane_chrome(
     panes: Vec<PaneInfo>,
     pane_borders: bool,
     pane_gaps: bool,
+    between_only: bool,
 ) -> Vec<PaneInfo> {
     let multi_pane = panes.len() > 1;
     panes
@@ -111,6 +133,17 @@ pub(crate) fn apply_pane_chrome(
 
             info.borders = if !multi_pane || !pane_borders {
                 Borders::NONE
+            } else if between_only {
+                // Only the shared split dividers, owned by the pane to the
+                // right/below via its LEFT/TOP border; no outer frame.
+                let mut borders = Borders::NONE;
+                if pane_to_left(&info, &panes).is_some() {
+                    borders.insert(Borders::LEFT);
+                }
+                if pane_above(&info, &panes).is_some() {
+                    borders.insert(Borders::TOP);
+                }
+                borders
             } else {
                 let mut borders = Borders::ALL;
                 if !pane_gaps {
@@ -175,7 +208,7 @@ pub(super) fn resize_tab_panes(
     if tab.zoomed {
         let focused_id = tab.layout.focused();
         if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, focused_id) {
-            let borders = if multi_pane && app.pane_borders {
+            let borders = if multi_pane && app.pane_borders && !app.pane_border_between_only {
                 Borders::ALL
             } else {
                 Borders::NONE
@@ -194,7 +227,12 @@ pub(super) fn resize_tab_panes(
         return;
     }
 
-    for info in apply_pane_chrome(tab.layout.panes(area), app.pane_borders, app.pane_gaps) {
+    for info in apply_pane_chrome(
+        tab.layout.panes(area),
+        app.pane_borders,
+        app.pane_gaps,
+        app.pane_border_between_only,
+    ) {
         let pane_inner = pane_inner_rect(info.rect, info.borders);
 
         if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, info.id) {
@@ -230,7 +268,7 @@ pub(super) fn compute_pane_infos(
 
     if ws.zoomed {
         let focused_id = ws.layout.focused();
-        let borders = if multi_pane && app.pane_borders {
+        let borders = if multi_pane && app.pane_borders && !app.pane_border_between_only {
             Borders::ALL
         } else {
             Borders::NONE
@@ -263,7 +301,12 @@ pub(super) fn compute_pane_infos(
         }];
     }
 
-    let mut pane_infos = apply_pane_chrome(ws.layout.panes(area), app.pane_borders, app.pane_gaps);
+    let mut pane_infos = apply_pane_chrome(
+        ws.layout.panes(area),
+        app.pane_borders,
+        app.pane_gaps,
+        app.pane_border_between_only,
+    );
 
     for info in &mut pane_infos {
         let pane_inner = pane_inner_rect(info.rect, info.borders);
@@ -447,11 +490,13 @@ fn render_pane_borders(
         return;
     }
 
+    // Between-only borders always use shared dividers, regardless of pane_gaps.
+    let pane_gaps = app.pane_gaps && !app.pane_border_between_only;
     let mut cells = std::collections::HashMap::<(u16, u16), LineCell>::new();
     for info in pane_infos {
         add_pane_border_cells(&mut cells, info);
     }
-    add_split_border_cells(app.pane_gaps, split_borders, &mut cells);
+    add_split_border_cells(pane_gaps, split_borders, &mut cells);
 
     let buf = frame.buffer_mut();
     let area = buf.area;
@@ -465,7 +510,7 @@ fn render_pane_borders(
         }
         let focused = pane_infos
             .iter()
-            .any(|info| info.is_focused && line_touches_pane(x, y, info, app.pane_gaps));
+            .any(|info| info.is_focused && line_touches_pane(x, y, info, pane_gaps));
         let symbol = line_cell_symbol(line);
         if symbol.is_empty() {
             continue;
@@ -1048,6 +1093,7 @@ mod tests {
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             true,
             false,
+            false,
         );
         let left = infos.iter().find(|info| info.id == root).unwrap();
         let right = infos.iter().find(|info| info.id == right).unwrap();
@@ -1067,6 +1113,7 @@ mod tests {
         let infos = apply_pane_chrome(
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             true,
+            false,
             false,
         );
         let top = infos.iter().find(|info| info.id == root).unwrap();
@@ -1088,6 +1135,7 @@ mod tests {
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             true,
             true,
+            false,
         );
         let left = infos.iter().find(|info| info.id == root).unwrap();
         let right = infos.iter().find(|info| info.id == right).unwrap();
@@ -1108,6 +1156,7 @@ mod tests {
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             false,
             true,
+            false,
         );
         let left = infos.iter().find(|info| info.id == root).unwrap();
         let right = infos.iter().find(|info| info.id == right).unwrap();
@@ -1127,12 +1176,103 @@ mod tests {
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             false,
             false,
+            false,
         );
 
         for info in infos {
             assert!(info.borders.is_empty());
             assert_eq!(pane_inner_rect(info.rect, info.borders), info.rect);
         }
+    }
+
+    #[test]
+    fn between_borders_draw_only_the_shared_divider() {
+        let mut workspace = Workspace::test_new("test");
+        let root = workspace.tabs[0].root_pane;
+        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.tabs[0].layout.focus_pane(root);
+
+        let infos = apply_pane_chrome(
+            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            true,
+            false,
+            true,
+        );
+        let left = infos.iter().find(|info| info.id == root).unwrap();
+        let right = infos.iter().find(|info| info.id == right).unwrap();
+
+        // No outer frame: the left pane draws nothing, the right pane owns
+        // the single divider column via its LEFT border, like tmux.
+        assert_eq!(left.rect.x + left.rect.width, right.rect.x);
+        assert!(left.borders.is_empty());
+        assert_eq!(right.borders, Borders::LEFT);
+        assert_eq!(pane_inner_rect(left.rect, left.borders), left.rect);
+        assert_eq!(
+            pane_inner_rect(right.rect, right.borders),
+            Rect::new(
+                right.rect.x + 1,
+                right.rect.y,
+                right.rect.width - 1,
+                right.rect.height
+            )
+        );
+    }
+
+    #[test]
+    fn between_borders_vertical_split_uses_top_divider_row() {
+        let mut workspace = Workspace::test_new("test");
+        let root = workspace.tabs[0].root_pane;
+        let below = workspace.test_split(ratatui::layout::Direction::Vertical);
+        workspace.tabs[0].layout.focus_pane(root);
+
+        let infos = apply_pane_chrome(
+            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            true,
+            false,
+            true,
+        );
+        let top = infos.iter().find(|info| info.id == root).unwrap();
+        let bottom = infos.iter().find(|info| info.id == below).unwrap();
+
+        assert!(top.borders.is_empty());
+        assert_eq!(bottom.borders, Borders::TOP);
+    }
+
+    #[test]
+    fn between_borders_ignore_pane_gaps() {
+        let mut workspace = Workspace::test_new("test");
+        let root = workspace.tabs[0].root_pane;
+        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.tabs[0].layout.focus_pane(root);
+
+        let infos = apply_pane_chrome(
+            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            true,
+            true,
+            true,
+        );
+        let left = infos.iter().find(|info| info.id == root).unwrap();
+        let right = infos.iter().find(|info| info.id == right).unwrap();
+
+        // Panes still abut and share a single divider even with pane_gaps on.
+        assert_eq!(left.rect.x + left.rect.width, right.rect.x);
+        assert!(left.borders.is_empty());
+        assert_eq!(right.borders, Borders::LEFT);
+    }
+
+    #[test]
+    fn between_borders_single_pane_stays_borderless() {
+        let workspace = Workspace::test_new("test");
+
+        let infos = apply_pane_chrome(
+            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            true,
+            false,
+            true,
+        );
+
+        assert_eq!(infos.len(), 1);
+        assert!(infos[0].borders.is_empty());
     }
 
     #[test]
@@ -1327,6 +1467,39 @@ mod tests {
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
         assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
+    }
+
+    #[tokio::test]
+    async fn zoomed_between_only_pane_fills_the_area() {
+        let mut app = AppState::test_new();
+        app.pane_border_between_only = true;
+        let mut workspace = Workspace::test_new("test");
+        let focused_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.zoomed = true;
+        workspace.tabs[0].runtimes.insert(
+            focused_pane,
+            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
+        );
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+
+        let area = Rect::new(10, 3, 40, 8);
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let infos = compute_pane_infos(
+            &app,
+            &terminal_runtimes,
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let info = &infos[0];
+
+        // A zoomed pane has no shared split edges, so between-only borders
+        // draw nothing and the pane fills the full area (minus the stable
+        // scrollbar gutter).
+        assert_eq!(info.rect, area);
+        assert!(info.borders.is_empty());
+        assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
     }
 
     #[tokio::test]
