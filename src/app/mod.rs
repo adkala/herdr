@@ -661,6 +661,17 @@ impl App {
             prompt_new_workspace_name: config.ui.prompt_new_workspace_name,
             pane_borders: config.ui.pane_borders,
             pane_gaps: config.ui.pane_gaps,
+            focused_pane_border: config
+                .ui
+                .focused_pane_border
+                .as_deref()
+                .map(crate::config::parse_color),
+            unfocused_pane_border: config
+                .ui
+                .unfocused_pane_border
+                .as_deref()
+                .map(crate::config::parse_color),
+            dim_unfocused_panes: config.ui.dim_unfocused_panes,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             pane_history_persistence: config.experimental.pane_history,
@@ -1475,6 +1486,17 @@ impl App {
                 self.state.prompt_new_workspace_name = config.ui.prompt_new_workspace_name;
                 self.state.pane_borders = config.ui.pane_borders;
                 self.state.pane_gaps = config.ui.pane_gaps;
+                self.state.focused_pane_border = config
+                    .ui
+                    .focused_pane_border
+                    .as_deref()
+                    .map(crate::config::parse_color);
+                self.state.unfocused_pane_border = config
+                    .ui
+                    .unfocused_pane_border
+                    .as_deref()
+                    .map(crate::config::parse_color);
+                self.state.dim_unfocused_panes = config.ui.dim_unfocused_panes;
                 self.state.show_agent_labels_on_pane_borders =
                     config.ui.show_agent_labels_on_pane_borders;
                 self.state.hide_tab_bar_when_single_tab = config.ui.hide_tab_bar_when_single_tab;
