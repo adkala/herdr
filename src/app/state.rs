@@ -1523,6 +1523,13 @@ pub struct AppState {
     pub prompt_new_workspace_name: bool,
     pub pane_borders: bool,
     pub pane_gaps: bool,
+    /// Border color for the focused pane; `None` falls back to the accent.
+    pub focused_pane_border: Option<Color>,
+    /// Border color for unfocused panes; `None` falls back to the theme's
+    /// muted overlay color.
+    pub unfocused_pane_border: Option<Color>,
+    /// Dim the content of unfocused panes.
+    pub dim_unfocused_panes: bool,
     pub show_agent_labels_on_pane_borders: bool,
     pub hide_tab_bar_when_single_tab: bool,
     pub pane_history_persistence: bool,
@@ -1899,6 +1906,9 @@ impl AppState {
             prompt_new_workspace_name: false,
             pane_borders: true,
             pane_gaps: false,
+            focused_pane_border: None,
+            unfocused_pane_border: None,
+            dim_unfocused_panes: true,
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
             pane_history_persistence: false,
