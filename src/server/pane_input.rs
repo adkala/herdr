@@ -352,6 +352,7 @@ pub(super) fn apply_client_terminal_input_events(
             | crate::raw_input::RawInputEvent::HostPaletteColors { .. }
             | crate::raw_input::RawInputEvent::HostColorSchemeChanged(_)
             | crate::raw_input::RawInputEvent::HostCellSizeReport { .. }
+            | crate::raw_input::RawInputEvent::HostClipboardReply { .. }
             | crate::raw_input::RawInputEvent::Unsupported => {
                 return Err("non-pane input reached targeted pane input".to_owned());
             }
