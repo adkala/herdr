@@ -1435,6 +1435,13 @@ pub struct AppState {
     pub pane_outer_borders: bool,
     pub pane_scrollbars: bool,
     pub pane_gaps: bool,
+    /// Border color for the focused pane; `None` falls back to the accent.
+    pub focused_pane_border: Option<Color>,
+    /// Border color for unfocused panes; `None` falls back to the theme's
+    /// muted overlay color.
+    pub unfocused_pane_border: Option<Color>,
+    /// Dim the content of unfocused panes.
+    pub dim_unfocused_panes: bool,
     pub show_agent_labels_on_pane_borders: bool,
     pub hide_tab_bar_when_single_tab: bool,
     pub tab_bar_position: TabBarPositionConfig,
@@ -1805,6 +1812,9 @@ impl AppState {
             pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: false,
+            focused_pane_border: None,
+            unfocused_pane_border: None,
+            dim_unfocused_panes: true,
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
