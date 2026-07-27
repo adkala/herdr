@@ -22,9 +22,16 @@ impl App {
                 Err((code, message)) => return encode_error(id, &code, message),
             };
         let cwd = Some(self.plugin_pane_cwd(plugin, params.cwd));
-        let width = params.width.or(pane.width);
-        let height = params.height.or(pane.height);
-        let chrome = params.chrome.or(pane.chrome).unwrap_or_default();
+        // Request wins, then the manifest, then `[ui.popup]` — so a plugin
+        // that ships no geometry can still be sized from the user's config.
+        let defaults = self.state.popup_defaults;
+        let width = params.width.or(pane.width).or(defaults.width);
+        let height = params.height.or(pane.height).or(defaults.height);
+        let chrome = params
+            .chrome
+            .or(pane.chrome)
+            .or(defaults.chrome)
+            .unwrap_or_default();
         if let Err(err) = self.spawn_popup_argv_command(
             &pane.command,
             cwd,

@@ -1546,6 +1546,10 @@ pub struct AppState {
     pub shell_mode: crate::config::ShellModeConfig,
     pub new_terminal_cwd: NewTerminalCwdConfig,
     pub pane_scrollback_limit_bytes: usize,
+    /// `[ui.popup]` fallbacks for popups that declare no geometry of their own
+    /// — including plugin manifest panes, which is the only way to resize
+    /// those without editing the plugin.
+    pub popup_defaults: crate::config::PopupConfig,
     #[allow(dead_code)] // kept for backward compat; palette.accent is the source of truth
     pub accent: Color,
     pub sound: SoundConfig,
@@ -1913,6 +1917,7 @@ impl AppState {
             shell_mode: crate::config::ShellModeConfig::Auto,
             new_terminal_cwd: NewTerminalCwdConfig::Follow,
             pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
+            popup_defaults: crate::config::PopupConfig::default(),
             accent: Color::Cyan,
             sound: SoundConfig {
                 enabled: false,

@@ -659,6 +659,7 @@ impl App {
             shell_mode: config.terminal.shell_mode,
             new_terminal_cwd: config.terminal.new_cwd.clone(),
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
+            popup_defaults: config.ui.popup,
             accent: crate::config::parse_color(&config.ui.accent),
             sound: config.ui.sound.clone(),
             local_sound_playback: true,
@@ -1468,6 +1469,7 @@ impl App {
                 }
                 self.state.sound = config.ui.sound.clone();
                 self.state.toast_config = config.ui.toast.clone();
+                self.state.popup_defaults = config.ui.popup;
             }
         }
 

@@ -225,7 +225,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # type = "shell" runs detached in the background.
 # type = "pane" opens a temporary pane and closes it when the command exits.
 # type = "popup" opens a session-modal terminal without changing the tab layout.
-# Popup width and height accept terminal cells or percentages such as "80%".
+# Popup width and height accept terminal cells or percentages such as "80%",
+# and chrome picks the presentation: "pane" (bordered pane, default) or
+# "modal" (settings-style overlay titled from description). Anything omitted
+# here falls back to [ui.popup].
 # On Windows, command strings run through cmd.exe /d /c.
 # [[keys.command]]
 # key = "prefix+alt+g"
@@ -233,6 +236,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # command = "lazygit"
 # width = "80%"
 # height = "80%"
+# chrome = "pane"
 
 # Legacy indexed shortcut config is still parsed for compatibility.
 # Prefer switch_tab, switch_workspace, and focus_agent for new configs.
@@ -317,6 +321,19 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Agent panel ordering: "spaces" (grouped by space) or "priority" (attention queue).
 # "workspaces" is accepted as an alias for "spaces".
 # agent_panel_sort = "spaces"
+
+# Fallback geometry for popup panes that do not size themselves — popup
+# keybinds, plugin.pane.open, and plugin manifest panes with
+# placement = "popup". An explicit width, height, or chrome on the popup wins;
+# these replace the built-in half-screen default, so a plugin that ships no
+# geometry can be resized without editing the plugin. Sizes accept terminal
+# cells or percentages such as "80%"; chrome is "pane" or "modal". A modal's
+# title header is added to the box rather than taken out of it, so the same
+# height leaves the same room for the terminal under either chrome.
+# [ui.popup]
+# width = "80%"
+# height = "70%"
+# chrome = "pane"
 
 # Expanded agent rows. Built-ins are state_icon, state_text, workspace, tab, pane, agent,
 # terminal_title, and terminal_title_stripped.
