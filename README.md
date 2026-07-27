@@ -16,6 +16,41 @@ until pushed.
 | `ui.pane_borders = "between"`: tmux-style near-borderless splits — only the shared divider between panes is drawn, no outer frame; zoomed/single panes draw nothing | `51d4dbc0` | `pr/split-only-pane-borders` | PR candidate |
 | `ui.focused_pane_border` / `ui.unfocused_pane_border` / `ui.dim_unfocused_panes`: separate focused-pane styling like tmux `pane-active-border-style` / `pane-border-style` / `window-style` shading | `2fb79ee1` | `pr/focused-pane-styles` | PR candidate |
 | workspace id length test no longer depends on how many workspaces earlier tests allocated from the global counter | `a2450fc4` | `pr/workspace-id-test-isolation` | PR candidate; test-only |
+| `[hdev]` config overlay: tables under `[hdev]` are deep-merged over the matching top-level sections before the config is deserialized, so one `config.toml` works on both binaries — see below | `b858eaf9` | — | **fork-only, never upstream** |
+
+### `[hdev]` config overlay
+
+Release builds of this fork share `~/.config/herdr` with stock herdr (config dirs
+are picked by build profile, not binary name), so both read the same
+`config.toml`. Stock tolerates keys it does not know — it warns and skips them —
+but a *type* mismatch on a key it does know aborts the whole parse and falls back
+to defaults, silently dropping every keybinding. `ui.pane_borders = "between"` is
+exactly that case: a bool upstream.
+
+`[hdev]` is the escape hatch. It is deep-merged over the base sections by this
+fork and reported as a single unknown section by stock:
+
+```toml
+[ui]
+pane_borders = false      # what stock herdr sees
+
+[hdev.ui]
+pane_borders = "between"  # what this fork uses
+```
+
+Use it only where the fork changes an existing key's *type or value*. Additive
+fork-only keys (`ui.sidebar_worktree_connectors`, popup `chrome`, `advanced.*`)
+belong inline — stock already ignores them safely, and the overlay cannot patch
+individual `[[keys.command]]` entries anyway, since arrays are replaced wholesale
+rather than merged.
+
+Notes:
+
+- Unknown keys inside the overlay are dropped and reported under their real
+  `hdev.` path, not the base path they would have merged into.
+- A malformed overlay is dropped whole, so the base config still loads.
+- Do not shadow keys the settings UI writes back (`[theme]`, `[ui.sound]`) — the
+  overlay would win and the UI change would look like it did not stick.
 
 To open a PR later:
 
