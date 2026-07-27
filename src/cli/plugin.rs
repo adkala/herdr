@@ -500,6 +500,7 @@ fn plugin_pane_open(args: &[String]) -> std::io::Result<i32> {
     let mut placement = None;
     let mut width = None;
     let mut height = None;
+    let mut chrome = None;
     let mut workspace_id = None;
     let mut target_pane_id = None;
     let mut direction = None;
@@ -548,6 +549,15 @@ fn plugin_pane_open(args: &[String]) -> std::io::Result<i32> {
                     return Ok(2);
                 };
                 height = Some(parsed);
+            }
+            "--chrome" => {
+                let Some(value) = required_value(args, &mut index, "--chrome") else {
+                    return Ok(2);
+                };
+                let Some(parsed) = parse_popup_chrome(&value) else {
+                    return Ok(2);
+                };
+                chrome = Some(parsed);
             }
             "--workspace" => {
                 let Some(value) = required_value(args, &mut index, "--workspace") else {
@@ -619,6 +629,7 @@ fn plugin_pane_open(args: &[String]) -> std::io::Result<i32> {
         placement,
         width,
         height,
+        chrome,
         workspace_id,
         target_pane_id,
         direction,
@@ -633,6 +644,16 @@ fn parse_popup_dimension(value: &str, flag: &str) -> Option<PopupSize> {
         Ok(value) => Some(value),
         Err(message) => {
             eprintln!("{flag} {message}");
+            None
+        }
+    }
+}
+
+fn parse_popup_chrome(value: &str) -> Option<crate::popup_size::PopupChrome> {
+    match crate::popup_size::PopupChrome::parse_cli(value) {
+        Ok(value) => Some(value),
+        Err(message) => {
+            eprintln!("--chrome {message}");
             None
         }
     }
@@ -1659,7 +1680,7 @@ fn print_plugin_action_help() {
 
 fn print_plugin_pane_help() {
     eprintln!("herdr plugin pane commands:");
-    eprintln!("  herdr plugin pane open --plugin ID --entrypoint ID [--placement overlay|popup|split|tab|zoomed] [--width SIZE] [--height SIZE] [--workspace ID] [--target-pane PANE] [--direction right|down] [--cwd PATH] [--env KEY=VALUE] [--focus|--no-focus]");
+    eprintln!("  herdr plugin pane open --plugin ID --entrypoint ID [--placement overlay|popup|split|tab|zoomed] [--width SIZE] [--height SIZE] [--chrome pane|modal] [--workspace ID] [--target-pane PANE] [--direction right|down] [--cwd PATH] [--env KEY=VALUE] [--focus|--no-focus]");
     eprintln!("  herdr plugin pane focus <pane_id>");
     eprintln!("  herdr plugin pane close <pane_id>");
 }

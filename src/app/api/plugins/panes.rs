@@ -24,11 +24,16 @@ impl App {
         let cwd = Some(self.plugin_pane_cwd(plugin, params.cwd));
         let width = params.width.or(pane.width);
         let height = params.height.or(pane.height);
+        let chrome = params.chrome.or(pane.chrome).unwrap_or_default();
         if let Err(err) = self.spawn_popup_argv_command(
             &pane.command,
             cwd,
             extra_env,
-            crate::app::popup::PopupGeometry { width, height },
+            crate::app::popup::PopupGeometry {
+                width,
+                height,
+                chrome,
+            },
         ) {
             return encode_error(id, "plugin_pane_open_failed", err.to_string());
         }

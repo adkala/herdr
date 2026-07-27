@@ -392,6 +392,13 @@ impl App {
                 "width and height are only supported when placement is popup",
             );
         }
+        if placement != PluginPanePlacement::Popup && params.chrome.is_some() {
+            return encode_error(
+                id,
+                "invalid_params",
+                "chrome is only supported when placement is popup",
+            );
+        }
         if placement == PluginPanePlacement::Popup && self.state.mode != crate::app::Mode::Terminal
         {
             return encode_error(
@@ -1352,6 +1359,7 @@ platforms = ["linux", "macos"]
                 placement: Some(PluginPanePlacement::Split),
                 width: None,
                 height: None,
+                chrome: None,
                 workspace_id: None,
                 target_pane_id: None,
                 direction: None,
@@ -1379,6 +1387,37 @@ platforms = ["linux", "macos"]
                 placement: Some(PluginPanePlacement::Split),
                 width: Some(crate::popup_size::PopupSize::Percent(80)),
                 height: None,
+                chrome: None,
+                workspace_id: None,
+                target_pane_id: None,
+                direction: Some(crate::api::schema::SplitDirection::Right),
+                cwd: None,
+                focus: false,
+                env: std::collections::HashMap::new(),
+            }),
+        });
+
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["error"]["code"], "invalid_params");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plugin_pane_open_rejects_popup_chrome_for_non_popup_placement() {
+        let mut app = test_app();
+        let root = unique_temp_path("plugin-pane-non-popup-chrome-param");
+        write_manifest(&root);
+        link_manifest(&mut app, &root);
+
+        let response = app.handle_api_request(Request {
+            id: "pane-open-chrome".into(),
+            method: Method::PluginPaneOpen(PluginPaneOpenParams {
+                plugin_id: "example.worktree-bootstrap".into(),
+                entrypoint: "board".into(),
+                placement: Some(PluginPanePlacement::Split),
+                width: None,
+                height: None,
+                chrome: Some(crate::popup_size::PopupChrome::Modal),
                 workspace_id: None,
                 target_pane_id: None,
                 direction: Some(crate::api::schema::SplitDirection::Right),
@@ -1414,6 +1453,7 @@ platforms = ["linux", "macos"]
                     placement: Some(PluginPanePlacement::Popup),
                     width: None,
                     height: None,
+                    chrome: None,
                     workspace_id: None,
                     target_pane_id: None,
                     direction: None,
@@ -1507,6 +1547,7 @@ command = ["sh", "-c", "printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \"$PWD\" \
                 placement: Some(PluginPanePlacement::Overlay),
                 width: None,
                 height: None,
+                chrome: None,
                 workspace_id: None,
                 target_pane_id: None,
                 direction: None,
@@ -1614,6 +1655,7 @@ command = ["sh", "-c", "printf '%s\n%s\n%s\n' \"$HERDR_PLUGIN_ROOT\" \"$HERDR_PL
                 placement: Some(PluginPanePlacement::Overlay),
                 width: None,
                 height: None,
+                chrome: None,
                 workspace_id: None,
                 target_pane_id: None,
                 direction: None,
@@ -1717,6 +1759,7 @@ command = ["sh", "-c", "sleep 1"]
                 placement: None,
                 width: None,
                 height: None,
+                chrome: None,
                 workspace_id: None,
                 target_pane_id: None,
                 direction: None,
@@ -1800,6 +1843,7 @@ command = ["sh", "-c", "sleep 1"]
                 placement: Some(PluginPanePlacement::Zoomed),
                 width: None,
                 height: None,
+                chrome: None,
                 workspace_id: None,
                 target_pane_id: None,
                 direction: Some(crate::api::schema::SplitDirection::Right),
@@ -1879,6 +1923,7 @@ command = ["sh", "-c", "sleep 1"]
                 placement: None,
                 width: None,
                 height: None,
+                chrome: None,
                 workspace_id: None,
                 target_pane_id: None,
                 direction: None,
@@ -1964,6 +2009,7 @@ command = ["sh", "-c", "printf %s ${{HERDR_PANE_ID-unset}} > '{}'; sleep 1"]
                 placement: None,
                 width: None,
                 height: None,
+                chrome: None,
                 workspace_id: None,
                 target_pane_id: None,
                 direction: None,
@@ -2154,6 +2200,7 @@ command = ["sh", "-c", "printf %s ${{HERDR_PANE_ID-unset}} > '{}'; sleep 1"]
                 placement: None,
                 width: None,
                 height: None,
+                chrome: None,
                 workspace_id: None,
                 target_pane_id: None,
                 direction: None,
@@ -2221,6 +2268,7 @@ command = ["sh", "-c", "printf %s ${{HERDR_PANE_ID-unset}} > '{}'; sleep 1"]
                 placement: Some(PluginPanePlacement::Overlay),
                 width: None,
                 height: None,
+                chrome: None,
                 workspace_id: None,
                 target_pane_id: None,
                 direction: None,

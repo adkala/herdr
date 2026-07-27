@@ -5771,6 +5771,7 @@ last_pane = "prefix+tab"
                 terminal_id: popup_terminal_id,
                 width: None,
                 height: None,
+                chrome: crate::popup_size::PopupChrome::default(),
             });
         };
         install_missing_popup(&mut app);

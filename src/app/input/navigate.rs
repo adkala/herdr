@@ -811,6 +811,7 @@ impl App {
             crate::app::popup::PopupGeometry {
                 width: binding.width,
                 height: binding.height,
+                chrome: binding.chrome.unwrap_or_default(),
             },
         )
     }
@@ -3172,6 +3173,7 @@ navigate_pane_down = "ctrl+j"
             description: None,
             width: None,
             height: None,
+            chrome: None,
         }];
 
         app.handle_key(TerminalKey::new(
@@ -3266,6 +3268,7 @@ navigate_pane_down = "ctrl+j"
             description: None,
             width: None,
             height: None,
+            chrome: None,
         }];
 
         app.handle_key(TerminalKey::new(

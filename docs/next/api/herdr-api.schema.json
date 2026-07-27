@@ -3397,6 +3397,16 @@
         },
         "PluginPaneOpenParams": {
           "properties": {
+            "chrome": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/PopupChrome"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -3569,6 +3579,14 @@
             "plugin_id"
           ],
           "type": "object"
+        },
+        "PopupChrome": {
+          "description": "Popup presentation. `Pane` keeps the classic bordered pane with the title\nin the border; `Modal` matches the built-in settings overlay: dimmed\nbackdrop, panel shell, and a bold title header row above the content.",
+          "enum": [
+            "pane",
+            "modal"
+          ],
+          "type": "string"
         },
         "PopupSize": {
           "oneOf": [
@@ -8347,6 +8365,16 @@
         },
         "PluginManifestPane": {
           "properties": {
+            "chrome": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/PopupChrome"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "command": {
               "items": {
                 "type": "string"
@@ -8523,6 +8551,14 @@
           "enum": [
             "local",
             "github"
+          ],
+          "type": "string"
+        },
+        "PopupChrome": {
+          "description": "Popup presentation. `Pane` keeps the classic bordered pane with the title\nin the border; `Modal` matches the built-in settings overlay: dimmed\nbackdrop, panel shell, and a bold title header row above the content.",
+          "enum": [
+            "pane",
+            "modal"
           ],
           "type": "string"
         },

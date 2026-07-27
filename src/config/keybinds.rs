@@ -6,7 +6,7 @@ use tracing::warn;
 
 use super::Config;
 use crate::input::TerminalKey;
-use crate::popup_size::PopupSize;
+use crate::popup_size::{PopupChrome, PopupSize};
 
 pub type KeyCombo = (KeyCode, KeyModifiers);
 
@@ -101,6 +101,9 @@ pub struct CommandKeybindConfig {
     pub width: Option<PopupSize>,
     /// Optional popup height as cells or a percentage string when type = "popup".
     pub height: Option<PopupSize>,
+    /// Optional popup presentation when type = "popup": "pane" (default) or
+    /// "modal" for settings-style chrome with a dimmed backdrop and title header.
+    pub chrome: Option<PopupChrome>,
 }
 
 impl Default for CommandKeybindConfig {
@@ -112,6 +115,7 @@ impl Default for CommandKeybindConfig {
             description: None,
             width: None,
             height: None,
+            chrome: None,
         }
     }
 }
@@ -289,6 +293,7 @@ pub struct CustomCommandKeybind {
     pub description: Option<String>,
     pub width: Option<PopupSize>,
     pub height: Option<PopupSize>,
+    pub chrome: Option<PopupChrome>,
 }
 
 /// Parsed keybinds for Herdr actions.
@@ -752,17 +757,17 @@ fn append_custom_command_bindings(
             CommandKeybindType::Popup => CustomCommandAction::Popup,
             CommandKeybindType::PluginAction => CustomCommandAction::PluginAction,
         };
-        let (width, height) = if action == CustomCommandAction::Popup {
-            (command.width, command.height)
+        let (width, height, chrome) = if action == CustomCommandAction::Popup {
+            (command.width, command.height, command.chrome)
         } else {
-            if command.width.is_some() || command.height.is_some() {
+            if command.width.is_some() || command.height.is_some() || command.chrome.is_some() {
                 let diag = format!(
-                    "popup size on non-popup custom command: keys.command[{index}]; ignoring width and height"
+                    "popup presentation on non-popup custom command: keys.command[{index}]; ignoring width, height, and chrome"
                 );
                 warn!(message = %diag, "config diagnostic");
                 diagnostics.push(diag);
             }
-            (None, None)
+            (None, None, None)
         };
         let label = bindings.label().unwrap_or_else(|| "unset".to_string());
         keybinds.custom_commands.push(CustomCommandKeybind {
@@ -773,6 +778,7 @@ fn append_custom_command_bindings(
             description: command.description.clone(),
             width,
             height,
+            chrome,
         });
     }
 }
@@ -2238,6 +2244,7 @@ command = "lazygit"
 type = "popup"
 width = 90
 height = "80%"
+chrome = "modal"
 "#,
         )
         .unwrap();
@@ -2254,6 +2261,10 @@ height = "80%"
         assert_eq!(
             keybinds.custom_commands[0].height,
             Some(PopupSize::Percent(80))
+        );
+        assert_eq!(
+            keybinds.custom_commands[0].chrome,
+            Some(PopupChrome::Modal)
         );
     }
 
@@ -2275,6 +2286,6 @@ width = "80%"
         assert!(config
             .collect_diagnostics()
             .iter()
-            .any(|diag| diag.contains("popup size on non-popup custom command")));
+            .any(|diag| diag.contains("popup presentation on non-popup custom command")));
     }
 }

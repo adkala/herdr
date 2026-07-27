@@ -369,7 +369,7 @@ pub(super) fn render_panes(
 
 pub(crate) fn popup_pane_rects(app: &AppState, area: Rect) -> Option<(Rect, Rect)> {
     let popup = app.popup_pane.as_ref()?;
-    resolve_popup_geometry(popup.width, popup.height, area)
+    resolve_popup_geometry(popup.width, popup.height, area, popup.chrome)
         .map(|geometry| (geometry.outer, geometry.inner))
 }
 
@@ -418,13 +418,43 @@ pub(super) fn render_popup_pane(
         .get(&popup.terminal_id)
         .and_then(|terminal| terminal.manual_label.as_deref())
         .unwrap_or("popup");
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(app.palette.accent))
-        .title(pane_border_title(title, outer.width, true).unwrap_or_default())
-        .style(Style::default().bg(app.palette.panel_bg));
-    frame.render_widget(Clear, outer);
-    frame.render_widget(block, outer);
+    match popup.chrome {
+        crate::popup_size::PopupChrome::Pane => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.palette.accent))
+                .title(pane_border_title(title, outer.width, true).unwrap_or_default())
+                .style(Style::default().bg(app.palette.panel_bg));
+            frame.render_widget(Clear, outer);
+            frame.render_widget(block, outer);
+        }
+        crate::popup_size::PopupChrome::Modal => {
+            super::dim_background(frame, frame.area());
+            let Some(shell_inner) = super::widgets::render_panel_shell(
+                frame,
+                outer,
+                app.palette.accent,
+                app.palette.panel_bg,
+            ) else {
+                return;
+            };
+            let header = Rect::new(shell_inner.x, shell_inner.y, shell_inner.width, 1);
+            super::widgets::render_modal_header(
+                frame,
+                header,
+                &format!(" {title}"),
+                &app.palette,
+            );
+            let separator = "─".repeat(shell_inner.width as usize);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    separator,
+                    Style::default().fg(app.palette.surface0),
+                )),
+                Rect::new(shell_inner.x, shell_inner.y + 1, shell_inner.width, 1),
+            );
+        }
+    }
     rt.render(frame, inner, !pane_is_scrolled_back(rt));
 }
 
@@ -1240,6 +1270,55 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(1, 1)].style().fg, Some(app.palette.accent));
         assert_eq!(buffer[(2, 1)].style().fg, Some(app.palette.overlay0));
+    }
+
+    #[tokio::test]
+    async fn modal_popup_renders_settings_style_chrome() {
+        let mut app = AppState::test_new();
+        let terminal_id = crate::terminal::TerminalId::alloc();
+        let mut terminal_state =
+            TerminalState::new(terminal_id.clone(), std::path::PathBuf::from("/popup"));
+        terminal_state.set_manual_label("picker".to_string());
+        app.terminals.insert(terminal_id.clone(), terminal_state);
+        app.popup_pane = Some(crate::app::state::PopupPaneState {
+            pane_id: PaneId::alloc(),
+            terminal_id: terminal_id.clone(),
+            width: Some(crate::popup_size::PopupSize::Cells(20)),
+            height: Some(crate::popup_size::PopupSize::Cells(10)),
+            chrome: crate::popup_size::PopupChrome::Modal,
+        });
+        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
+        terminal_runtimes.insert(
+            terminal_id,
+            TerminalRuntime::test_with_scrollback_bytes(17, 5, 1024, b"ready\n"),
+        );
+
+        let area = Rect::new(0, 0, 40, 20);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 20)).unwrap();
+        terminal
+            .draw(|frame| render_popup_pane(&app, &terminal_runtimes, frame, area))
+            .unwrap();
+
+        let (outer, inner) = popup_pane_rects(&app, area).unwrap();
+        let buffer = terminal.backend().buffer();
+        // Panel shell border, like the settings overlay.
+        assert_eq!(buffer[(outer.x, outer.y)].symbol(), "┌");
+        assert_eq!(
+            buffer[(outer.x, outer.y)].style().fg,
+            Some(app.palette.accent)
+        );
+        // Bold title header row inside the panel instead of a border title.
+        assert_eq!(buffer[(outer.x + 2, outer.y + 1)].symbol(), "p");
+        assert!(buffer[(outer.x + 2, outer.y + 1)]
+            .style()
+            .add_modifier
+            .contains(Modifier::BOLD));
+        // Separator rule between the header and the terminal content.
+        assert_eq!(buffer[(outer.x + 1, outer.y + 2)].symbol(), "─");
+        // Terminal content starts below the two header rows.
+        assert_eq!(inner.y, outer.y + 3);
+        assert_eq!(inner.height, outer.height - 4);
     }
 
     #[tokio::test]
