@@ -1724,7 +1724,6 @@ impl AppState {
         terminal_runtimes.get(terminal_id)
     }
 
-    #[cfg(test)]
     pub(crate) fn runtime_for_pane<'a>(
         &'a self,
         terminal_runtimes: &'a crate::terminal::TerminalRuntimeRegistry,

@@ -127,6 +127,11 @@ pub enum AppEvent {
     /// A pane child emitted a valid OSC 52 clipboard write. The main loop
     /// re-emits it through herdr's own clipboard writer.
     ClipboardWrite { content: Vec<u8> },
+    /// A pane child queried the clipboard with OSC 52 while
+    /// `advanced.osc52_paste = "terminal"`. The main loop forwards the query
+    /// to the attached client's outer terminal and relays the reply back to
+    /// this pane's PTY (or an empty reply on timeout).
+    ClipboardQuery { pane_id: PaneId },
     /// Prefix-mode ASCII input-source request, emitted on entering/leaving the ASCII input
     /// realm. The foreground process applies the host-local TIS switch (`active = true`) /
     /// restore (`active = false`): the client in server mode (via server forwarding), the

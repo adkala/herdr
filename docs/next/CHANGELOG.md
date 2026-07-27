@@ -7,7 +7,7 @@
 
 ### Added
 - Added `advanced.escape_time_ms` to configure the lone-Escape flush delay; set it to `0` for no delay, like tmux `escape-time 0`. Defaults to 10ms, preserving previous behavior.
-- Added opt-in OSC 52 paste support via `advanced.osc52_paste`: pane applications that query the clipboard with `OSC 52 ; c ; ?` receive the host clipboard base64-encoded. Defaults to off, keeping the previous ignore-queries behavior, because enabling lets any process in a pane read the clipboard.
+- Added opt-in OSC 52 paste support via `advanced.osc52_paste`: pane applications that query the clipboard with `OSC 52 ; c ; ?` get an answer. `true` replies with the clipboard of the machine running the Herdr server; `"terminal"` forwards the query to the terminal Herdr is displayed in and relays its reply, so panes paste from the local clipboard even over ssh. Defaults to off, keeping the previous ignore-queries behavior, because enabling lets any process in a pane read the clipboard.
 
 ### Fixed
 - Agent prompts now wait briefly after sending text before pressing Enter, preventing prompts from remaining in agent composers without starting a turn. (#1878)

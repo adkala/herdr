@@ -2044,6 +2044,27 @@ impl HeadlessServer {
                 }
                 true
             }
+            AppEvent::ClipboardQuery { pane_id } => {
+                // Ask the foreground client's outer terminal for its clipboard; the
+                // reply comes back through that client's input stream. With no
+                // reachable client (or a full queue) answer empty immediately so the
+                // querying pane application unblocks.
+                let pane_id = *pane_id;
+                if !self.app.register_host_clipboard_query(pane_id) {
+                    self.app.answer_pane_clipboard_query(pane_id, "");
+                } else if !self.send_to_foreground_client(ServerMessage::ClipboardQuery) {
+                    if let Some(position) = self
+                        .app
+                        .pending_host_clipboard_queries
+                        .iter()
+                        .rposition(|(pending, _)| *pending == pane_id)
+                    {
+                        self.app.pending_host_clipboard_queries.remove(position);
+                    }
+                    self.app.answer_pane_clipboard_query(pane_id, "");
+                }
+                false
+            }
             AppEvent::PrefixInputSource { active } => {
                 // Input-source switching is a client-local host side effect; forward it to the
                 // foreground client (which owns the real TIS switch + run-loop pump), like clipboard.
@@ -4000,6 +4021,8 @@ impl HeadlessServer {
         // No resize polling needed — server has no terminal.
         // Client resize messages drive size changes instead.
 
+        self.app.expire_host_clipboard_queries(now);
+
         if self
             .app
             .config_diagnostic_deadline
@@ -4243,6 +4266,11 @@ fn events_for_app_routing(
                 Some(event)
             }
             crate::raw_input::RawInputEvent::OuterFocusLost if !source_is_foreground => None,
+            // Clipboard queries go to the foreground client's terminal, so only
+            // its replies may satisfy a pending query.
+            crate::raw_input::RawInputEvent::HostClipboardReply { .. } if !source_is_foreground => {
+                None
+            }
             crate::raw_input::RawInputEvent::Key(_)
             | crate::raw_input::RawInputEvent::Mouse(_)
             | crate::raw_input::RawInputEvent::Paste(_) => {
@@ -9069,6 +9097,80 @@ next_tab = ""
                 .recv_timeout(Duration::from_millis(50))
                 .is_err(),
             "background client should not receive clipboard writes"
+        );
+    }
+
+    #[test]
+    fn clipboard_query_targets_foreground_client_and_registers_pending() {
+        let mut server = test_headless_server();
+        let (background_tx, background_control_rx, _background_rx) = test_client_writer();
+        let (foreground_tx, foreground_control_rx, _foreground_rx) = test_client_writer();
+
+        server.clients.insert(
+            1,
+            ClientConnection::new(
+                (120, 40),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                1,
+                RenderEncoding::SemanticFrame,
+                Some(background_tx),
+            ),
+        );
+        server.clients.insert(
+            2,
+            ClientConnection::new(
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                2,
+                RenderEncoding::SemanticFrame,
+                Some(foreground_tx),
+            ),
+        );
+        server.foreground_client_id = Some(2);
+        server.sync_foreground_client_state();
+
+        let pane_id = crate::layout::PaneId::from_raw(7);
+        server.handle_internal_event_with_forwarding(AppEvent::ClipboardQuery { pane_id });
+
+        match read_server_message(
+            foreground_control_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("foreground clipboard query message"),
+        ) {
+            ServerMessage::ClipboardQuery => {}
+            other => panic!("expected clipboard query message, got {other:?}"),
+        }
+        assert!(
+            background_control_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "background client should not receive clipboard queries"
+        );
+        assert_eq!(
+            server
+                .app
+                .pending_host_clipboard_queries
+                .front()
+                .map(|(pending, _)| *pending),
+            Some(pane_id)
+        );
+    }
+
+    #[test]
+    fn clipboard_query_without_foreground_client_leaves_no_pending_query() {
+        let mut server = test_headless_server();
+        server.foreground_client_id = None;
+
+        let pane_id = crate::layout::PaneId::from_raw(7);
+        server.handle_internal_event_with_forwarding(AppEvent::ClipboardQuery { pane_id });
+
+        assert!(
+            server.app.pending_host_clipboard_queries.is_empty(),
+            "unreachable client must not leave a pending query behind"
         );
     }
 

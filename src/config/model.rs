@@ -864,10 +864,68 @@ pub struct AdvancedConfig {
     /// tmux `escape-time 0`. Default: 10.
     pub escape_time_ms: u16,
     /// Answer OSC 52 clipboard read queries (`ESC ] 52 ; c ; ?`) from pane
-    /// applications with the host clipboard, base64-encoded (paste support).
-    /// Default: false, because enabling lets any process running in a pane
-    /// read the clipboard invisibly; queries are ignored while disabled.
-    pub osc52_paste: bool,
+    /// applications (paste support). `false` ignores queries, `true` answers
+    /// with the clipboard of the machine running the Herdr server, and
+    /// `"terminal"` forwards the query to the attached client's outer terminal
+    /// so panes can paste from the local clipboard over ssh. Default: false,
+    /// because enabling lets any process running in a pane read the clipboard
+    /// invisibly.
+    pub osc52_paste: Osc52PasteConfig,
+}
+
+/// Parsed `advanced.osc52_paste` value: `false` | `true` | `"off"` |
+/// `"server"` | `"terminal"`. The boolean forms are the original opt-in
+/// switch; `"server"` is the explicit spelling of `true`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Osc52PasteConfig {
+    /// Ignore clipboard read queries (previous behavior).
+    #[default]
+    Off,
+    /// Answer with the clipboard of the machine running the Herdr server.
+    Server,
+    /// Forward the query to the attached client's outer terminal and relay
+    /// its reply, so panes read the terminal-local clipboard over ssh.
+    Terminal,
+}
+
+impl<'de> Deserialize<'de> for Osc52PasteConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = Osc52PasteConfig;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("false, true, \"off\", \"server\", or \"terminal\"")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(if value {
+                    Osc52PasteConfig::Server
+                } else {
+                    Osc52PasteConfig::Off
+                })
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                match value {
+                    "off" => Ok(Osc52PasteConfig::Off),
+                    "server" => Ok(Osc52PasteConfig::Server),
+                    "terminal" => Ok(Osc52PasteConfig::Terminal),
+                    other => Err(E::unknown_variant(other, &["off", "server", "terminal"])),
+                }
+            }
+
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1115,7 +1173,7 @@ impl Default for AdvancedConfig {
         Self {
             scrollback_limit_bytes: DEFAULT_SCROLLBACK_LIMIT_BYTES,
             escape_time_ms: DEFAULT_ESCAPE_TIME_MS,
-            osc52_paste: false,
+            osc52_paste: Osc52PasteConfig::Off,
         }
     }
 }
@@ -1709,10 +1767,31 @@ delay_seconds = {}
 
     #[test]
     fn osc52_paste_is_opt_in() {
-        assert!(!Config::default().advanced.osc52_paste);
+        assert_eq!(
+            Config::default().advanced.osc52_paste,
+            Osc52PasteConfig::Off
+        );
 
         let config: Config = toml::from_str("[advanced]\nosc52_paste = true\n").unwrap();
-        assert!(config.advanced.osc52_paste);
+        assert_eq!(config.advanced.osc52_paste, Osc52PasteConfig::Server);
+
+        let config: Config = toml::from_str("[advanced]\nosc52_paste = false\n").unwrap();
+        assert_eq!(config.advanced.osc52_paste, Osc52PasteConfig::Off);
+    }
+
+    #[test]
+    fn osc52_paste_parses_string_modes() {
+        for (value, expected) in [
+            ("\"off\"", Osc52PasteConfig::Off),
+            ("\"server\"", Osc52PasteConfig::Server),
+            ("\"terminal\"", Osc52PasteConfig::Terminal),
+        ] {
+            let config: Config =
+                toml::from_str(&format!("[advanced]\nosc52_paste = {value}\n")).unwrap();
+            assert_eq!(config.advanced.osc52_paste, expected, "value {value}");
+        }
+
+        assert!(toml::from_str::<Config>("[advanced]\nosc52_paste = \"local\"\n").is_err());
     }
 
     #[test]
