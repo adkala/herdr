@@ -20,9 +20,14 @@ pub const SERVER_MESSAGE_ENDPOINT_CONTROL: u32 = 20;
 pub const SERVER_MESSAGE_PANE_SURFACE: u32 = 13;
 pub const SERVER_MESSAGE_SEMANTIC_NOTIFICATION: u32 = 14;
 pub const SERVER_MESSAGE_PANE_SURFACE_PATCH: u32 = 19;
+/// `ServerMessage::ClipboardQuery` (fork: `advanced.osc52_paste = "terminal"`),
+/// appended after `EndpointControl`; pinned by
+/// `protocol::wire::tests::server_clipboard_query_wire_variant`.
+pub const SERVER_MESSAGE_CLIPBOARD_QUERY: u32 = 21;
 const CLIENT_MESSAGE_CLIENT_SHELL_PANE_INPUT: u32 = 13;
 const CLIENT_MESSAGE_CLIENT_SHELL_FOCUS: u32 = 18;
 const CLIENT_MESSAGE_ENDPOINT_CONTROL: u32 = 20;
+const CLIENT_MESSAGE_CLIENT_SHELL_HOST_CLIPBOARD_REPLY: u32 = 21;
 
 pub fn register_spawned_herdr_pid(pid: Option<u32>) {
     let Some(pid) = pid else {
@@ -397,6 +402,24 @@ pub fn send_client_shell_focus(stream: &mut UnixStream, focused: bool) -> Result
     stream
         .flush()
         .map_err(|e| format!("flush client shell focus: {e}"))
+}
+
+/// Relays an outer terminal's OSC 52 clipboard reply the way the client shell
+/// does after it forwarded `ServerMessage::ClipboardQuery` to its terminal.
+pub fn send_client_shell_host_clipboard_reply(
+    stream: &mut UnixStream,
+    data: &str,
+) -> Result<(), String> {
+    let payload = encode_varint_enum(
+        CLIENT_MESSAGE_CLIENT_SHELL_HOST_CLIPBOARD_REPLY,
+        &[&encode_string(data)],
+    );
+    stream
+        .write_all(&frame_message(&payload))
+        .map_err(|e| format!("write client shell host clipboard reply: {e}"))?;
+    stream
+        .flush()
+        .map_err(|e| format!("flush client shell host clipboard reply: {e}"))
 }
 
 pub fn send_detach(stream: &mut UnixStream) -> Result<(), String> {
