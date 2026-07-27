@@ -11,6 +11,11 @@ until pushed.
 | `advanced.escape_time_ms`: configurable lone-Escape flush delay, like tmux `escape-time` (default 10ms) | `d711242d` | `pr/escape-time-ms` | PR candidate |
 | `advanced.osc52_paste`: opt-in OSC 52 paste support — answers `OSC 52 ; c ; ?` clipboard read queries (off by default). `true`/`"server"` replies with the server machine's clipboard; `"terminal"` forwards the query to the local terminal so panes paste from the local clipboard over ssh | `39e37492`, `9fc58e61`, `9d525818` (e2e test), `07b31d49` (docs) | `pr/osc52-paste` | PR candidate |
 | macOS manual artifact builds install patched Homebrew `zig@0.15` instead of setup-zig | `17153442` | `pr/macos-manual-zig` | mainly serves this fork's `dev` prerelease builds; upstreamable if wanted |
+| `ui.sidebar_worktree_connectors`: set `false` to drop the worktree tree connectors (`├─`/`└─`) and trailing group chevron added by upstream #1873, restoring the flat indent style with a leading chevron | `2694949c` | `pr/sidebar-worktree-connectors` | PR candidate |
+| popup `chrome = "modal"`: popup panes (`plugin.pane.open`, `herdr plugin pane open --chrome`, `type = "popup"` keybinds) can render with the built-in settings overlay treatment — dimmed backdrop, panel shell, bold title header row | `bfd0653f` | `pr/popup-modal-chrome` | PR candidate |
+| `ui.pane_borders = "between"`: tmux-style near-borderless splits — only the shared divider between panes is drawn, no outer frame; zoomed/single panes draw nothing | `51d4dbc0` | `pr/split-only-pane-borders` | PR candidate |
+| `ui.focused_pane_border` / `ui.unfocused_pane_border` / `ui.dim_unfocused_panes`: separate focused-pane styling like tmux `pane-active-border-style` / `pane-border-style` / `window-style` shading | `2fb79ee1` | `pr/focused-pane-styles` | PR candidate |
+| workspace id length test no longer depends on how many workspaces earlier tests allocated from the global counter | `a2450fc4` | `pr/workspace-id-test-isolation` | PR candidate; test-only |
 
 To open a PR later:
 
