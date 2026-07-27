@@ -2276,6 +2276,23 @@ impl HeadlessServer {
                 }
                 changed
             }
+            ServerEvent::ClientShellHostClipboardReply { client_id, data } => {
+                // Clipboard queries go to the foreground client's terminal, so only
+                // its replies may satisfy a pending query.
+                let foreground_shell = self.foreground_client_id == Some(client_id)
+                    && self.clients.get(&client_id).is_some_and(|client| {
+                        matches!(client.mode, ClientConnectionMode::ClientShell)
+                    });
+                if foreground_shell {
+                    self.app.resolve_host_clipboard_reply(&data);
+                } else {
+                    debug!(
+                        client_id,
+                        "dropped host clipboard reply from a non-foreground client"
+                    );
+                }
+                false
+            }
             ServerEvent::ClientShellFocus { client_id, focused } => {
                 let Some(client) = self.clients.get(&client_id) else {
                     return false;
@@ -3290,6 +3307,8 @@ impl HeadlessServer {
 
         // No resize polling needed — server has no terminal.
         // Client resize messages drive size changes instead.
+
+        self.app.expire_host_clipboard_queries(now);
 
         if self
             .app

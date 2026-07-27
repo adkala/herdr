@@ -5834,6 +5834,117 @@ fn clipboard_write_failed_foreground_send_removes_client_without_visual_change()
 }
 
 #[test]
+fn clipboard_query_targets_foreground_client_and_registers_pending() {
+    let mut server = test_headless_server();
+    let (background_tx, background_control_rx, _background_rx) = test_client_writer();
+    let (foreground_tx, foreground_control_rx, _foreground_rx) = test_client_writer();
+
+    server.clients.insert(
+        1,
+        ClientConnection::new(
+            (120, 40),
+            crate::kitty_graphics::HostCellSize::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            Some(background_tx),
+        ),
+    );
+    server.clients.insert(
+        2,
+        ClientConnection::new(
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            2,
+            RenderEncoding::SemanticFrame,
+            Some(foreground_tx),
+        ),
+    );
+    server.foreground_client_id = Some(2);
+    server.sync_foreground_client_state();
+
+    let pane_id = crate::layout::PaneId::from_raw(7);
+    let changed =
+        server.handle_internal_event_with_forwarding(AppEvent::ClipboardQuery { pane_id });
+
+    assert!(!changed);
+    match read_server_message(
+        foreground_control_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("foreground clipboard query message"),
+    ) {
+        ServerMessage::ClipboardQuery => {}
+        other => panic!("expected clipboard query message, got {other:?}"),
+    }
+    assert!(
+        background_control_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err(),
+        "background client should not receive clipboard queries"
+    );
+    assert_eq!(
+        server
+            .app
+            .pending_host_clipboard_queries
+            .front()
+            .map(|(pending, _)| *pending),
+        Some(pane_id)
+    );
+}
+
+#[test]
+fn clipboard_query_without_foreground_client_leaves_no_pending_query() {
+    let mut server = test_headless_server();
+    server.foreground_client_id = None;
+
+    let pane_id = crate::layout::PaneId::from_raw(7);
+    let changed =
+        server.handle_internal_event_with_forwarding(AppEvent::ClipboardQuery { pane_id });
+
+    assert!(!changed);
+    assert!(
+        server.app.pending_host_clipboard_queries.is_empty(),
+        "unreachable client must not leave a pending query behind"
+    );
+}
+
+#[test]
+fn host_clipboard_reply_is_accepted_only_from_the_foreground_client_shell() {
+    let mut server = test_headless_server();
+    let (foreground_tx, _foreground_control_rx, _foreground_rx) = test_client_writer();
+    let (other_tx, _other_control_rx, _other_rx) = test_client_writer();
+    for (client_id, tx) in [(1, foreground_tx), (2, other_tx)] {
+        let mut client = ClientConnection::new(
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            client_id,
+            RenderEncoding::SemanticFrame,
+            Some(tx),
+        );
+        client.mode = ClientConnectionMode::ClientShell;
+        server.clients.insert(client_id, client);
+    }
+    server.foreground_client_id = Some(1);
+    let pane_id = crate::layout::PaneId::from_raw(7);
+
+    assert!(server.app.register_host_clipboard_query(pane_id));
+    server.handle_server_event(ServerEvent::ClientShellHostClipboardReply {
+        client_id: 2,
+        data: "aGVsbG8=".into(),
+    });
+    assert_eq!(
+        server.app.pending_host_clipboard_queries.len(),
+        1,
+        "a background client's reply must not satisfy the pending query"
+    );
+
+    server.handle_server_event(ServerEvent::ClientShellHostClipboardReply {
+        client_id: 1,
+        data: "aGVsbG8=".into(),
+    });
+    assert!(server.app.pending_host_clipboard_queries.is_empty());
+}
+
+#[test]
 fn semantic_notifications_broadcast_only_to_client_shells() {
     let mut server = test_headless_server();
     let (shell_one_tx, shell_one_control, _shell_one_frames) = test_client_writer();

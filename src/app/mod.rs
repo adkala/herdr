@@ -135,6 +135,10 @@ pub struct App {
     pub(crate) update_manifest_check_enabled: bool,
     pub(crate) loaded_host_cursor: crate::config::HostCursorModeConfig,
     pub(crate) agent_metadata_deadline: Option<Instant>,
+    /// Panes waiting on a host-terminal OSC 52 clipboard reply
+    /// (`advanced.osc52_paste = "terminal"`), oldest first with its deadline.
+    pub(crate) pending_host_clipboard_queries:
+        std::collections::VecDeque<(crate::layout::PaneId, Instant)>,
     pub(crate) pending_agent_resume_deadline: Option<Instant>,
     pub(crate) session_save_deadline: Option<Instant>,
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
@@ -353,6 +357,16 @@ pub(crate) fn client_palette_for_appearance(
     resolve_effective_theme(runtime, Some(appearance)).0
 }
 
+fn osc52_paste_mode_from_config(
+    value: crate::config::Osc52PasteConfig,
+) -> crate::pane::Osc52PasteMode {
+    match value {
+        crate::config::Osc52PasteConfig::Off => crate::pane::Osc52PasteMode::Off,
+        crate::config::Osc52PasteConfig::Server => crate::pane::Osc52PasteMode::ServerClipboard,
+        crate::config::Osc52PasteConfig::Terminal => crate::pane::Osc52PasteMode::HostTerminal,
+    }
+}
+
 impl App {
     pub fn new(
         config: &Config,
@@ -363,7 +377,9 @@ impl App {
     ) -> Self {
         let (prefix_code, prefix_mods) = config.prefix_key();
         crate::kitty_graphics::set_enabled(config.kitty_graphics_enabled());
-        crate::pane::set_osc52_paste_enabled(config.advanced.osc52_paste);
+        crate::pane::set_osc52_paste_mode(osc52_paste_mode_from_config(
+            config.advanced.osc52_paste,
+        ));
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(crate::render_signal::RenderSignal::new());
@@ -569,6 +585,7 @@ impl App {
             config_diagnostic_deadline: None,
             toast_deadline: None,
             last_api_notification_at: None,
+            pending_host_clipboard_queries: std::collections::VecDeque::new(),
             state,
             pane_graphics: pane_graphics::Runtime::default(),
             pane_graphics_files: Arc::new(crate::pane_graphics_files::FileStore::default()),
@@ -889,7 +906,9 @@ impl App {
 
         if !invalid_section("advanced") {
             self.state.pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes;
-            crate::pane::set_osc52_paste_enabled(config.advanced.osc52_paste);
+            crate::pane::set_osc52_paste_mode(osc52_paste_mode_from_config(
+                config.advanced.osc52_paste,
+            ));
         }
 
         if !invalid_section("update") {

@@ -351,6 +351,27 @@ impl HeadlessServer {
                 self.send_to_foreground_client(ServerMessage::Clipboard { data });
                 false
             }
+            AppEvent::ClipboardQuery { pane_id } => {
+                // Ask the foreground client's outer terminal for its clipboard; the
+                // reply comes back through that client's shell lane. With no
+                // reachable client (or a full queue) answer empty immediately so the
+                // querying pane application unblocks.
+                let pane_id = *pane_id;
+                if !self.app.register_host_clipboard_query(pane_id) {
+                    self.app.answer_pane_clipboard_query(pane_id, "");
+                } else if !self.send_to_foreground_client(ServerMessage::ClipboardQuery) {
+                    if let Some(position) = self
+                        .app
+                        .pending_host_clipboard_queries
+                        .iter()
+                        .rposition(|(pending, _)| *pending == pane_id)
+                    {
+                        self.app.pending_host_clipboard_queries.remove(position);
+                    }
+                    self.app.answer_pane_clipboard_query(pane_id, "");
+                }
+                false
+            }
             AppEvent::StateChanged { pane_id, agent, .. } => {
                 // Capture toast before handling.
                 let toast_before = self.app.state.toast.clone();

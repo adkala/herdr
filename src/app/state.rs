@@ -955,6 +955,18 @@ impl AppState {
         terminal_runtimes.get(terminal_id)
     }
 
+    /// Runtime for a pane in any workspace, for asynchronous replies (host
+    /// clipboard) that must reach a pane without knowing its workspace.
+    pub(crate) fn runtime_for_pane<'a>(
+        &'a self,
+        terminal_runtimes: &'a crate::terminal::TerminalRuntimeRegistry,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<&'a crate::terminal::TerminalRuntime> {
+        (0..self.workspaces.len()).find_map(|ws_idx| {
+            self.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, pane_id)
+        })
+    }
+
     pub(crate) fn pane_visible_on_active_surface(
         &self,
         ws_idx: usize,

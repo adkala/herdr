@@ -143,6 +143,11 @@ pub enum AppEvent {
     /// A pane child emitted a valid OSC 52 clipboard write. The main loop
     /// re-emits it through herdr's own clipboard writer.
     ClipboardWrite { content: Vec<u8> },
+    /// A pane child queried the clipboard with OSC 52 while
+    /// `advanced.osc52_paste = "terminal"`. The server forwards the query to
+    /// the foreground client's outer terminal and relays the reply back to
+    /// this pane's PTY (or an empty reply on timeout).
+    ClipboardQuery { pane_id: PaneId },
     /// A pane child reported its shell current directory through terminal
     /// metadata such as OSC 7.
     TerminalCwdReported {

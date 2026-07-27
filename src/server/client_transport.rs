@@ -492,6 +492,8 @@ pub(crate) enum ServerEvent {
         client_id: u64,
         update: crate::protocol::ClientHostThemeUpdate,
     },
+    /// A client-owned shell relayed its outer terminal's OSC 52 clipboard reply.
+    ClientShellHostClipboardReply { client_id: u64, data: String },
     /// A client-owned shell reported whether its outer terminal has focus.
     ClientShellFocus { client_id: u64, focused: bool },
     /// A client-owned shell updated its local mouse-capture preference.
@@ -1129,6 +1131,9 @@ fn client_read_loop_with_endpoint_controls(
                     break;
                 }
                 ServerEvent::ClientShellHostTheme { client_id, update }
+            }
+            ClientMessage::ClientShellHostClipboardReply { data } => {
+                ServerEvent::ClientShellHostClipboardReply { client_id, data }
             }
             ClientMessage::ClientShellFocus { focused } => {
                 ServerEvent::ClientShellFocus { client_id, focused }
