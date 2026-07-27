@@ -7,6 +7,7 @@ use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
     "experimental",
+    "hdev",
     "keys",
     "onboarding",
     "remote",
@@ -17,6 +18,18 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "update",
     "worktrees",
 ];
+
+/// Fork-only overlay section (adkala/herdr). Tables under `[hdev]` are
+/// deep-merged over the matching top-level sections before the config is
+/// deserialized, so one `config.toml` can carry values this fork understands
+/// but stock herdr would reject.
+///
+/// This exists because stock herdr discards the *entire* config on a type
+/// mismatch — `ui.pane_borders = "between"` is a bool there, so a shared
+/// config would silently drop every keybinding. Stock reports `[hdev]` as one
+/// unknown section and ignores it; fork-only keys that stock merely does not
+/// know (it warns and skips those) do not need the overlay.
+const OVERLAY_SECTION: &str = "hdev";
 
 pub fn app_dir_name() -> &'static str {
     if cfg!(debug_assertions) {
@@ -122,7 +135,24 @@ impl Config {
             }
         };
 
-        match deserialize_with_ignored::<Config, _>(toml::Deserializer::new(&content)) {
+        let mut overlay_diagnostics = Vec::new();
+        let deserialized = match overlay_merged_value(&content) {
+            Ok(Some((value, diagnostics))) => {
+                overlay_diagnostics = diagnostics;
+                deserialize_with_ignored::<Config, _>(value)
+            }
+            Ok(None) => deserialize_with_ignored::<Config, _>(toml::Deserializer::new(&content)),
+            Err(err) => {
+                warn!(err = %err, "config parse error, using defaults");
+                return LoadedConfig {
+                    config: Self::default(),
+                    diagnostics: vec![format!("config parse error: {err}; using defaults")],
+                    invalid_sections: Vec::new(),
+                };
+            }
+        };
+
+        match deserialized {
             Ok((config, ignored_keys)) => {
                 let (unknown_sections, mut diagnostics) =
                     unknown_top_level_sections_from_str(&content);
@@ -135,6 +165,7 @@ impl Config {
                         .collect(),
                     None,
                 ));
+                diagnostics.extend(overlay_diagnostics);
                 diagnostics.extend(config.collect_diagnostics());
                 LoadedConfig {
                     config,
@@ -149,6 +180,120 @@ impl Config {
                     diagnostics: vec![format!("config parse error: {err}; using defaults")],
                     invalid_sections: Vec::new(),
                 }
+            }
+        }
+    }
+}
+
+/// Parse `content` and fold its `[hdev]` overlay into the base sections.
+///
+/// Returns `Ok(None)` when there is no overlay so the caller keeps the
+/// span-annotated string deserializer, whose parse errors point at a line and
+/// column. Otherwise returns the merged document plus diagnostics for keys the
+/// overlay defines that herdr does not know.
+fn overlay_merged_value(
+    content: &str,
+) -> Result<Option<(toml::Value, Vec<String>)>, toml::de::Error> {
+    let mut value = content.parse::<toml::Value>()?;
+    let Some(table) = value.as_table_mut() else {
+        return Ok(None);
+    };
+    if !table.contains_key(OVERLAY_SECTION) {
+        return Ok(None);
+    }
+
+    let diagnostics = apply_overlay(table);
+    Ok(Some((value, diagnostics)))
+}
+
+/// Remove the `[hdev]` overlay from `table` and deep-merge it over the
+/// remaining sections. Unknown overlay keys are dropped and reported so they
+/// are not blamed on the base section they would have merged into. A malformed
+/// overlay is dropped whole, leaving the base config intact.
+fn apply_overlay(table: &mut toml::map::Map<String, toml::Value>) -> Vec<String> {
+    let Some(overlay) = table.remove(OVERLAY_SECTION) else {
+        return Vec::new();
+    };
+    let toml::Value::Table(mut overlay) = overlay else {
+        return vec![format!(
+            "invalid [{OVERLAY_SECTION}] overlay: expected a table; ignoring section"
+        )];
+    };
+
+    // Validate the overlay on its own first: `Config` is `#[serde(default)]`,
+    // so a partial table deserializes cleanly and reports unknown keys under
+    // their real `hdev.` path.
+    let ignored_keys =
+        match deserialize_with_ignored::<Config, _>(toml::Value::Table(overlay.clone())) {
+            Ok((_, ignored_keys)) => ignored_keys,
+            Err(err) => {
+                return vec![format!(
+                    "invalid [{OVERLAY_SECTION}] overlay: {err}; ignoring section"
+                )];
+            }
+        };
+    for path in &ignored_keys {
+        remove_config_key_path(&mut overlay, path);
+    }
+
+    for (key, value) in overlay {
+        match table.get_mut(&key) {
+            Some(existing) => merge_value(existing, value),
+            None => {
+                table.insert(key, value);
+            }
+        }
+    }
+
+    unknown_config_key_diagnostics(ignored_keys, Some(OVERLAY_SECTION))
+}
+
+/// Deep-merge `overlay` into `base`. Tables merge key by key; every other
+/// value, arrays included, replaces the base wholesale.
+fn merge_value(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base_table), toml::Value::Table(overlay_table)) => {
+            for (key, value) in overlay_table {
+                match base_table.get_mut(&key) {
+                    Some(existing) => merge_value(existing, value),
+                    None => {
+                        base_table.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
+}
+
+fn remove_config_key_path(
+    table: &mut toml::map::Map<String, toml::Value>,
+    path: &[ConfigKeyPathSegment],
+) {
+    let Some((ConfigKeyPathSegment::Key(key), rest)) = path.split_first() else {
+        return;
+    };
+    if rest.is_empty() {
+        table.remove(key);
+        return;
+    }
+    let Some(value) = table.get_mut(key) else {
+        return;
+    };
+    remove_config_value_path(value, rest);
+}
+
+fn remove_config_value_path(value: &mut toml::Value, path: &[ConfigKeyPathSegment]) {
+    match path.split_first() {
+        None => {}
+        Some((ConfigKeyPathSegment::Key(_), _)) => {
+            if let Some(table) = value.as_table_mut() {
+                remove_config_key_path(table, path);
+            }
+        }
+        Some((ConfigKeyPathSegment::Index(index), rest)) => {
+            if let Some(item) = value.as_array_mut().and_then(|items| items.get_mut(*index)) {
+                remove_config_value_path(item, rest);
             }
         }
     }
@@ -236,19 +381,22 @@ pub fn load_live_config() -> Result<LoadedConfig, Vec<String>> {
 }
 
 fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>> {
-    let value = content
+    let mut value = content
         .parse::<toml::Value>()
         .map_err(|err| vec![format!("config parse error: {err}; keeping current config")])?;
-    let table = value.as_table().ok_or_else(|| {
+    let table = value.as_table_mut().ok_or_else(|| {
         vec![
             "config parse error: top-level config must be a table; keeping current config"
                 .to_string(),
         ]
     })?;
+    let overlay_diagnostics = apply_overlay(table);
+    let table = &*table;
 
     let mut config = Config::default();
     let mut diagnostics = unknown_top_level_section_diagnostics(table);
     diagnostics.extend(unknown_top_level_config_key_diagnostics(table));
+    diagnostics.extend(overlay_diagnostics);
     let mut invalid_sections = Vec::new();
 
     if let Some(value) = table.get("onboarding") {
@@ -1045,5 +1193,155 @@ mouse_capture = false
         let (updated, removed) = remove_keybinding_config_sections(content);
         assert!(!removed);
         assert_eq!(updated, content);
+    }
+
+    #[test]
+    fn overlay_section_overrides_base_values_and_reports_nothing() {
+        let loaded = load_live_config_from_str(
+            r#"
+[theme]
+name = "tokyo-night"
+auto_switch = false
+
+[ui]
+pane_borders = false
+pane_gaps = false
+
+[hdev.ui]
+pane_borders = "between"
+
+[hdev.theme]
+name = "catppuccin"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.diagnostics, Vec::<String>::new());
+        assert_eq!(
+            loaded.config.ui.pane_borders,
+            super::super::model::PaneBordersConfig::Between
+        );
+        // sibling keys of an overridden key survive the merge
+        assert!(!loaded.config.ui.pane_gaps);
+        assert_eq!(loaded.config.theme.name.as_deref(), Some("catppuccin"));
+        assert!(!loaded.config.theme.auto_switch);
+    }
+
+    #[test]
+    fn overlay_section_applies_without_a_matching_base_section() {
+        let loaded = load_live_config_from_str(
+            r#"
+[hdev.ui]
+pane_borders = "between"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.diagnostics, Vec::<String>::new());
+        assert_eq!(
+            loaded.config.ui.pane_borders,
+            super::super::model::PaneBordersConfig::Between
+        );
+    }
+
+    #[test]
+    fn overlay_unknown_keys_are_reported_under_their_hdev_path() {
+        let loaded = load_live_config_from_str(
+            r#"
+[ui]
+pane_borders = false
+
+[hdev.ui]
+pane_borders = "between"
+pane_borderss = true
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            loaded.diagnostics,
+            vec!["unknown config key hdev.ui.pane_borderss; ignoring key"]
+        );
+        // the known sibling still merges
+        assert_eq!(
+            loaded.config.ui.pane_borders,
+            super::super::model::PaneBordersConfig::Between
+        );
+    }
+
+    #[test]
+    fn invalid_overlay_is_dropped_whole_and_base_config_survives() {
+        let loaded = load_live_config_from_str(
+            r#"
+[keys]
+prefix = "alt+m"
+
+[ui]
+pane_borders = false
+
+[hdev.ui]
+pane_borders = 5
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.diagnostics.len(), 1);
+        assert!(
+            loaded.diagnostics[0].starts_with("invalid [hdev] overlay:"),
+            "unexpected diagnostic: {}",
+            loaded.diagnostics[0]
+        );
+        assert!(loaded.invalid_sections.is_empty());
+        assert_eq!(
+            loaded.config.ui.pane_borders,
+            super::super::model::PaneBordersConfig::Off
+        );
+        assert_eq!(loaded.config.keys.prefix, "alt+m");
+    }
+
+    #[test]
+    fn non_table_overlay_is_reported_and_ignored() {
+        let loaded = load_live_config_from_str(
+            r#"
+hdev = 1
+
+[keys]
+prefix = "alt+m"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            loaded.diagnostics,
+            vec!["invalid [hdev] overlay: expected a table; ignoring section"]
+        );
+        assert_eq!(loaded.config.keys.prefix, "alt+m");
+    }
+
+    #[test]
+    fn overlay_merged_value_skips_configs_without_an_overlay() {
+        assert!(overlay_merged_value("[ui]\npane_borders = false\n")
+            .unwrap()
+            .is_none());
+
+        let (value, diagnostics) = overlay_merged_value(
+            "[ui]\npane_borders = false\n\n[hdev.ui]\npane_borders = \"between\"\n",
+        )
+        .unwrap()
+        .expect("overlay present");
+        assert_eq!(diagnostics, Vec::<String>::new());
+        let table = value.as_table().expect("table");
+        assert!(!table.contains_key("hdev"), "overlay must be consumed");
+        assert_eq!(
+            table["ui"]["pane_borders"],
+            toml::Value::String("between".to_string())
+        );
+    }
+
+    #[test]
+    fn merge_value_replaces_arrays_wholesale() {
+        let mut base = toml::Value::Array(vec![toml::Value::Integer(1), toml::Value::Integer(2)]);
+        merge_value(&mut base, toml::Value::Array(vec![toml::Value::Integer(3)]));
+        assert_eq!(base, toml::Value::Array(vec![toml::Value::Integer(3)]));
     }
 }
