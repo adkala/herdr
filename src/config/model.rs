@@ -967,6 +967,12 @@ pub struct UiConfig {
     /// Accent color for highlights, borders, and navigation UI.
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
     pub accent: String,
+    /// Border color for the focused pane, like tmux `pane-active-border-style`.
+    /// Accepts the same values as `accent`. Default: the accent color.
+    pub focused_pane_border: Option<String>,
+    /// Border color for unfocused panes, like tmux `pane-border-style`.
+    /// Accepts the same values as `accent`. Default: the theme's muted overlay color.
+    pub unfocused_pane_border: Option<String>,
     /// Optional visual toast notifications for background workspace events.
     pub toast: ToastConfig,
     /// Play sounds when agents change state in background workspaces.
@@ -1188,6 +1194,8 @@ impl Default for UiConfig {
             status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
+            focused_pane_border: None,
+            unfocused_pane_border: None,
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
         }
@@ -1520,6 +1528,22 @@ tab_bar_right_separator = " · "
             TabBarRightEntryConfig::Hostname
         ));
         assert_eq!(config.ui.tab_bar_right_separator, " · ");
+    }
+
+    #[test]
+    fn focused_pane_style_defaults_and_parse() {
+        let default_config = Config::default();
+        assert_eq!(default_config.ui.focused_pane_border, None);
+        assert_eq!(default_config.ui.unfocused_pane_border, None);
+
+        let toml = r##"
+[ui]
+focused_pane_border = "#89b4fa"
+unfocused_pane_border = "gray"
+"##;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.focused_pane_border.as_deref(), Some("#89b4fa"));
+        assert_eq!(config.ui.unfocused_pane_border.as_deref(), Some("gray"));
     }
 
     #[test]

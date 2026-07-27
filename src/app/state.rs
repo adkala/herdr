@@ -835,6 +835,11 @@ pub struct AppState {
     pub pane_outer_borders: bool,
     pub pane_scrollbars: bool,
     pub pane_gaps: bool,
+    /// Border color for the focused pane; `None` falls back to the accent.
+    pub focused_pane_border: Option<Color>,
+    /// Border color for unfocused panes; `None` falls back to the theme's
+    /// muted overlay color.
+    pub unfocused_pane_border: Option<Color>,
     pub show_agent_labels_on_pane_borders: bool,
     pub tab_bar_right: Vec<TabBarStatusSegment>,
     pub tab_bar_right_separator: String,
@@ -1062,6 +1067,8 @@ impl AppState {
             pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: false,
+            focused_pane_border: None,
+            unfocused_pane_border: None,
             show_agent_labels_on_pane_borders: false,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
