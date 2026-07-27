@@ -8,6 +8,11 @@ use portable_pty::CommandBuilder;
 pub(crate) const HERDR_PANE_ID_ENV_VAR: &str = "HERDR_PANE_ID";
 pub(crate) const HERDR_TAB_ID_ENV_VAR: &str = "HERDR_TAB_ID";
 pub(crate) const HERDR_WORKSPACE_ID_ENV_VAR: &str = "HERDR_WORKSPACE_ID";
+/// Absolute path to the running server executable. Plugin commands, plugin
+/// panes, and custom command keybinds already export it; panes get it too so
+/// any script in a pane can invoke the same build that owns its socket
+/// instead of whichever `herdr` happens to be first on `PATH`.
+pub(crate) const HERDR_BIN_PATH_ENV_VAR: &str = "HERDR_BIN_PATH";
 
 pub(crate) const PI_CODING_AGENT_DIR_ENV_VAR: &str = "PI_CODING_AGENT_DIR";
 pub(crate) const OMP_CONFIG_DIR_ENV_VAR: &str = "PI_CONFIG_DIR";
@@ -22,8 +27,27 @@ pub(crate) const GROK_CONFIG_DIR_ENV_VAR: &str = "GROK_CONFIG_DIR";
 /// `$GROK_HOME/config.toml` and `$GROK_HOME/auth.json`).
 pub(crate) const GROK_HOME_ENV_VAR: &str = "GROK_HOME";
 
+/// Environment every pane process inherits: how to reach this server, and
+/// which binary it is. A pane that knows only the socket still has to guess a
+/// client, and a mismatched build is rejected outright by the protocol check.
+pub(crate) fn pane_base_env() -> Vec<(String, String)> {
+    let mut env = vec![(
+        crate::api::SOCKET_PATH_ENV_VAR.to_string(),
+        crate::api::socket_path().display().to_string(),
+    )];
+    if let Ok(current_exe) = std::env::current_exe() {
+        env.push((
+            HERDR_BIN_PATH_ENV_VAR.to_string(),
+            current_exe.display().to_string(),
+        ));
+    }
+    env
+}
+
 pub(crate) fn apply_pane_base_env(cmd: &mut CommandBuilder) {
-    cmd.env(crate::api::SOCKET_PATH_ENV_VAR, crate::api::socket_path());
+    for (key, value) in pane_base_env() {
+        cmd.env(key, value);
+    }
 }
 
 pub(crate) fn pi_extension_dir() -> io::Result<PathBuf> {

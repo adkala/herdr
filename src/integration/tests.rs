@@ -3785,3 +3785,23 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     clear_integration_path_env();
     let _ = fs::remove_dir_all(base);
 }
+
+#[test]
+fn pane_base_env_carries_socket_and_server_binary() {
+    let env = pane_base_env();
+    let socket = env
+        .iter()
+        .find(|(key, _)| key == crate::api::SOCKET_PATH_ENV_VAR)
+        .map(|(_, value)| value.clone())
+        .expect("panes need the api socket path");
+    assert_eq!(socket, crate::api::socket_path().display().to_string());
+
+    // Panes that only know the socket still have to guess which client speaks
+    // it; the protocol check rejects a mismatched build outright.
+    let bin = env
+        .iter()
+        .find(|(key, _)| key == HERDR_BIN_PATH_ENV_VAR)
+        .map(|(_, value)| value.clone())
+        .expect("panes need the running server binary");
+    assert_eq!(bin, std::env::current_exe().unwrap().display().to_string());
+}
