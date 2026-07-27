@@ -41,6 +41,37 @@ impl PopupSize {
     }
 }
 
+/// Popup presentation. `Pane` keeps the classic bordered pane with the title
+/// in the border; `Modal` matches the built-in settings overlay: dimmed
+/// backdrop, panel shell, and a bold title header row above the content.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PopupChrome {
+    #[default]
+    Pane,
+    Modal,
+}
+
+impl PopupChrome {
+    /// Rows reserved inside the panel above the content (title + separator).
+    pub(crate) fn header_rows(self) -> u16 {
+        match self {
+            Self::Pane => 0,
+            Self::Modal => 2,
+        }
+    }
+
+    pub(crate) fn parse_cli(value: &str) -> Result<Self, String> {
+        match value {
+            "pane" => Ok(Self::Pane),
+            "modal" => Ok(Self::Modal),
+            _ => Err("must be pane or modal".to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PopupResolvedGeometry {
     pub outer: Rect,
@@ -51,9 +82,12 @@ pub(crate) fn resolve_popup_geometry(
     width: Option<PopupSize>,
     height: Option<PopupSize>,
     area: Rect,
+    chrome: PopupChrome,
 ) -> Option<PopupResolvedGeometry> {
+    let header_rows = chrome.header_rows();
+    let min_height = 4 + header_rows;
     let default_width = area.width.saturating_div(2).max(6);
-    let default_height = area.height.saturating_div(2).max(4);
+    let default_height = area.height.saturating_div(2).max(min_height);
     let outer_width = width
         .map(|width| width.resolve(area.width))
         .unwrap_or(default_width)
@@ -62,16 +96,16 @@ pub(crate) fn resolve_popup_geometry(
     let outer_height = height
         .map(|height| height.resolve(area.height))
         .unwrap_or(default_height)
-        .max(4)
+        .max(min_height)
         .min(area.height);
-    if outer_width < 6 || outer_height < 4 {
+    if outer_width < 6 || outer_height < min_height {
         return None;
     }
 
     let outer_x = area.x + (area.width.saturating_sub(outer_width)) / 2;
     let outer_y = area.y + (area.height.saturating_sub(outer_height)) / 2;
     let pane_inner_width = outer_width.saturating_sub(2);
-    let pane_inner_height = outer_height.saturating_sub(2);
+    let pane_inner_height = outer_height.saturating_sub(2).saturating_sub(header_rows);
     let terminal_cols = if pane_inner_width <= 4 {
         pane_inner_width
     } else {
@@ -79,7 +113,7 @@ pub(crate) fn resolve_popup_geometry(
     };
     let inner = Rect::new(
         outer_x.saturating_add(1),
-        outer_y.saturating_add(1),
+        outer_y.saturating_add(1).saturating_add(header_rows),
         terminal_cols,
         pane_inner_height,
     );
@@ -214,6 +248,7 @@ mod tests {
             Some(PopupSize::Percent(80)),
             Some(PopupSize::Percent(40)),
             ratatui::layout::Rect::new(0, 0, 100, 30),
+            super::PopupChrome::Pane,
         )
         .unwrap();
         assert_eq!(resolved.outer, ratatui::layout::Rect::new(10, 9, 80, 12));
@@ -226,6 +261,7 @@ mod tests {
             Some(PopupSize::Percent(100)),
             Some(PopupSize::Percent(100)),
             ratatui::layout::Rect::new(4, 2, 100, 30),
+            super::PopupChrome::Pane,
         )
         .unwrap();
 
@@ -239,14 +275,66 @@ mod tests {
             Some(PopupSize::Cells(4)),
             None,
             ratatui::layout::Rect::new(0, 0, 80, 24),
+            super::PopupChrome::Pane,
         )
         .unwrap();
         assert_eq!(resolved.outer.width, 6);
         assert_eq!(resolved.inner.width, 4);
 
-        assert!(
-            super::resolve_popup_geometry(None, None, ratatui::layout::Rect::new(0, 0, 5, 24),)
-                .is_none()
+        assert!(super::resolve_popup_geometry(
+            None,
+            None,
+            ratatui::layout::Rect::new(0, 0, 5, 24),
+            super::PopupChrome::Pane,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn modal_chrome_reserves_header_rows_above_the_terminal() {
+        let pane = super::resolve_popup_geometry(
+            Some(PopupSize::Cells(60)),
+            Some(PopupSize::Cells(20)),
+            ratatui::layout::Rect::new(0, 0, 100, 30),
+            super::PopupChrome::Pane,
+        )
+        .unwrap();
+        let modal = super::resolve_popup_geometry(
+            Some(PopupSize::Cells(60)),
+            Some(PopupSize::Cells(20)),
+            ratatui::layout::Rect::new(0, 0, 100, 30),
+            super::PopupChrome::Modal,
+        )
+        .unwrap();
+
+        assert_eq!(modal.outer, pane.outer);
+        assert_eq!(modal.inner.x, pane.inner.x);
+        assert_eq!(modal.inner.width, pane.inner.width);
+        assert_eq!(modal.inner.y, pane.inner.y + 2);
+        assert_eq!(modal.inner.height, pane.inner.height - 2);
+    }
+
+    #[test]
+    fn modal_chrome_raises_minimum_height() {
+        assert!(super::resolve_popup_geometry(
+            None,
+            Some(PopupSize::Cells(5)),
+            ratatui::layout::Rect::new(0, 0, 80, 5),
+            super::PopupChrome::Modal,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn chrome_parses_cli_values() {
+        assert_eq!(
+            super::PopupChrome::parse_cli("pane"),
+            Ok(super::PopupChrome::Pane)
         );
+        assert_eq!(
+            super::PopupChrome::parse_cli("modal"),
+            Ok(super::PopupChrome::Modal)
+        );
+        assert!(super::PopupChrome::parse_cli("fancy").is_err());
     }
 }

@@ -1361,6 +1361,7 @@ mod tests {
             description: None,
             width: None,
             height: None,
+            chrome: None,
         }];
 
         app.handle_terminal_key(TerminalKey::new(
@@ -1387,6 +1388,7 @@ mod tests {
             description: None,
             width: None,
             height: None,
+            chrome: None,
         }];
 
         app.handle_terminal_key(TerminalKey::new(
@@ -1412,9 +1414,10 @@ mod tests {
             label: "ctrl+alt+g".into(),
             command: "sleep 1".into(),
             action: crate::config::CustomCommandAction::Popup,
-            description: None,
+            description: Some("git ui".into()),
             width: Some(crate::popup_size::PopupSize::Cells(60)),
             height: Some(crate::popup_size::PopupSize::Cells(12)),
+            chrome: None,
         }];
 
         app.handle_terminal_key(TerminalKey::new(
@@ -1424,6 +1427,11 @@ mod tests {
         .await;
 
         assert!(app.state.popup_pane.is_some());
+        let popup_terminal_id = app.state.popup_pane.as_ref().unwrap().terminal_id.clone();
+        assert_eq!(
+            app.state.terminals[&popup_terminal_id].manual_label.as_deref(),
+            Some("git ui")
+        );
         assert!(!app
             .popup_runtime()
             .unwrap()
@@ -1470,6 +1478,7 @@ mod tests {
             description: None,
             width: None,
             height: None,
+            chrome: None,
         }];
 
         app.handle_terminal_key(TerminalKey::new(

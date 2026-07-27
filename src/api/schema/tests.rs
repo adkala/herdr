@@ -929,6 +929,7 @@ fn plugin_link_list_unlink_round_trip() {
             placement: PluginPanePlacement::Overlay,
             width: None,
             height: None,
+            chrome: None,
             command: vec!["bun".into(), "run".into(), "board.ts".into()],
         }],
         link_handlers: vec![PluginManifestLinkHandler {
@@ -1284,6 +1285,7 @@ fn plugin_pane_open_request_round_trips() {
             placement: Some(PluginPanePlacement::Popup),
             width: Some(crate::popup_size::PopupSize::Cells(90)),
             height: Some(crate::popup_size::PopupSize::Percent(80)),
+            chrome: Some(crate::popup_size::PopupChrome::Modal),
             workspace_id: None,
             target_pane_id: None,
             direction: None,

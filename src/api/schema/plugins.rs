@@ -6,7 +6,7 @@ use super::common::AgentStatus;
 use super::common::SplitDirection;
 use super::panes::PaneInfo;
 use super::workspaces::WorkspaceWorktreeInfo;
-use crate::popup_size::PopupSize;
+use crate::popup_size::{PopupChrome, PopupSize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PluginLinkParams {
@@ -275,6 +275,8 @@ pub struct PluginManifestPane {
     pub width: Option<PopupSize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<PopupSize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chrome: Option<PopupChrome>,
     pub command: Vec<String>,
 }
 
@@ -424,6 +426,8 @@ pub struct PluginPaneOpenParams {
     pub width: Option<PopupSize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<PopupSize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chrome: Option<PopupChrome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

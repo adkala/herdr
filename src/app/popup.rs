@@ -3,13 +3,14 @@ use std::path::PathBuf;
 use crate::app::{App, Mode};
 use crate::layout::PaneId;
 use crate::pane::PaneLaunchEnv;
-use crate::popup_size::{resolve_popup_geometry, PopupSize};
+use crate::popup_size::{resolve_popup_geometry, PopupChrome, PopupSize};
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct PopupGeometry {
     pub width: Option<PopupSize>,
     pub height: Option<PopupSize>,
+    pub chrome: PopupChrome,
 }
 
 impl App {
@@ -163,9 +164,12 @@ impl App {
             let (estimated_rows, estimated_cols) = self.state.estimate_pane_size();
             ratatui::layout::Rect::new(0, 0, estimated_cols, estimated_rows)
         };
-        let Some(resolved_geometry) =
-            resolve_popup_geometry(geometry.width, geometry.height, terminal_area)
-        else {
+        let Some(resolved_geometry) = resolve_popup_geometry(
+            geometry.width,
+            geometry.height,
+            terminal_area,
+            geometry.chrome,
+        ) else {
             return Err(std::io::Error::other("terminal area too small for popup"));
         };
         let rows = resolved_geometry.inner.height;
@@ -182,6 +186,7 @@ impl App {
             terminal_id,
             width: geometry.width,
             height: geometry.height,
+            chrome: geometry.chrome,
         });
         self.state.mode = Mode::Terminal;
         Ok(())
@@ -206,6 +211,7 @@ impl App {
             terminal_id: terminal_id.clone(),
             width: None,
             height: None,
+            chrome: PopupChrome::default(),
         });
         (pane_id, terminal_id)
     }
@@ -237,6 +243,7 @@ mod tests {
             terminal_id,
             width: None,
             height: None,
+            chrome: PopupChrome::default(),
         });
         app
     }

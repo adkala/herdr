@@ -82,6 +82,8 @@ struct RawPluginManifestPane {
     width: Option<PopupSize>,
     #[serde(default)]
     height: Option<PopupSize>,
+    #[serde(default)]
+    chrome: Option<crate::popup_size::PopupChrome>,
     command: Vec<String>,
 }
 
@@ -430,6 +432,12 @@ fn normalize_manifest_pane(
             "pane width and height are only supported when placement is popup".to_string(),
         ));
     }
+    if pane.placement != PluginPanePlacement::Popup && pane.chrome.is_some() {
+        return Err((
+            "invalid_plugin_pane_chrome",
+            "pane chrome is only supported when placement is popup".to_string(),
+        ));
+    }
     Ok(PluginManifestPane {
         id,
         title,
@@ -438,6 +446,7 @@ fn normalize_manifest_pane(
         placement: pane.placement,
         width: pane.width,
         height: pane.height,
+        chrome: pane.chrome,
         command,
     })
 }

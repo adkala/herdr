@@ -1426,6 +1426,7 @@ mod tests {
                 description: Some("open lazygit".to_string()),
                 width: None,
                 height: None,
+                chrome: None,
             },
             crate::config::CustomCommandKeybind {
                 bindings: crate::config::ActionKeybinds::prefix("alt+h"),
@@ -1435,6 +1436,7 @@ mod tests {
                 description: None,
                 width: None,
                 height: None,
+                chrome: None,
             },
         ];
 

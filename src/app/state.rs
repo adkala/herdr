@@ -59,6 +59,7 @@ pub(crate) struct PopupPaneState {
     pub terminal_id: crate::terminal::TerminalId,
     pub width: Option<crate::popup_size::PopupSize>,
     pub height: Option<crate::popup_size::PopupSize>,
+    pub chrome: crate::popup_size::PopupChrome,
 }
 
 // ---------------------------------------------------------------------------
