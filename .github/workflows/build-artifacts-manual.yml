@@ -95,6 +95,11 @@ jobs:
       - name: Remove Zig caches
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
+      - name: Stamp dev build identity
+        run: |
+          echo "HERDR_BUILD_CHANNEL=dev" >> "$GITHUB_ENV"
+          echo "HERDR_BUILD_ID=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -173,6 +178,11 @@ jobs:
       - name: Remove Zig caches
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
+      - name: Stamp dev build identity
+        run: |
+          echo "HERDR_BUILD_CHANNEL=dev" >> "$GITHUB_ENV"
+          echo "HERDR_BUILD_ID=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -226,6 +236,12 @@ jobs:
           Remove-Item -Recurse -Force .zig-cache -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force vendor/libghostty-vt/.zig-cache -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force vendor/libghostty-vt/zig-out -ErrorAction SilentlyContinue
+
+      - name: Stamp dev build identity
+        shell: bash
+        run: |
+          echo "HERDR_BUILD_CHANNEL=dev" >> "$GITHUB_ENV"
+          echo "HERDR_BUILD_ID=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
