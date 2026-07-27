@@ -93,9 +93,15 @@ pub(crate) fn resolve_popup_geometry(
         .unwrap_or(default_width)
         .max(6)
         .min(area.width);
+    // The header rows live inside the panel, so charging them to a declared
+    // height would silently cost the content two rows the moment a popup
+    // switches to modal chrome. Grow the box by the chrome's own overhead
+    // instead: the same declaration then yields the same usable area under
+    // either chrome, and only the screen edge clamps it.
     let outer_height = height
         .map(|height| height.resolve(area.height))
         .unwrap_or(default_height)
+        .saturating_add(header_rows)
         .max(min_height)
         .min(area.height);
     if outer_width < 6 || outer_height < min_height {
@@ -307,11 +313,28 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(modal.outer, pane.outer);
+        // The panel grows by its own header instead of charging the content
+        // for it, so switching chrome does not shrink the terminal inside.
+        assert_eq!(modal.outer.height, pane.outer.height + 2);
+        assert_eq!(modal.outer.width, pane.outer.width);
         assert_eq!(modal.inner.x, pane.inner.x);
         assert_eq!(modal.inner.width, pane.inner.width);
-        assert_eq!(modal.inner.y, pane.inner.y + 2);
-        assert_eq!(modal.inner.height, pane.inner.height - 2);
+        assert_eq!(modal.inner.height, pane.inner.height);
+    }
+
+    #[test]
+    fn modal_chrome_growth_stops_at_the_screen_edge() {
+        let area = ratatui::layout::Rect::new(0, 0, 40, 12);
+        let modal = super::resolve_popup_geometry(
+            Some(PopupSize::Percent(100)),
+            Some(PopupSize::Percent(100)),
+            area,
+            super::PopupChrome::Modal,
+        )
+        .unwrap();
+
+        assert_eq!(modal.outer.height, area.height);
+        assert_eq!(modal.inner.height, area.height - 4);
     }
 
     #[test]

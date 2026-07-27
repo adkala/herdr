@@ -804,14 +804,15 @@ impl App {
         &mut self,
         binding: &crate::config::CustomCommandKeybind,
     ) -> io::Result<()> {
+        let defaults = self.state.popup_defaults;
         self.spawn_popup_shell_command(
             &binding.command,
             None,
             self.custom_command_env().0,
             crate::app::popup::PopupGeometry {
-                width: binding.width,
-                height: binding.height,
-                chrome: binding.chrome.unwrap_or_default(),
+                width: binding.width.or(defaults.width),
+                height: binding.height.or(defaults.height),
+                chrome: binding.chrome.or(defaults.chrome).unwrap_or_default(),
             },
         )?;
         if let Some(description) = binding.description.as_deref() {
@@ -3456,6 +3457,47 @@ navigate_pane_down = "ctrl+j"
         assert!(!state.creating_new_tab);
         assert!(state.request_new_tab);
         assert!(state.requested_new_tab_name.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn popup_keybind_without_geometry_uses_ui_popup_defaults() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut config = Config::default();
+        config.ui.popup = crate::config::PopupConfig {
+            width: Some(crate::popup_size::PopupSize::Percent(80)),
+            height: Some(crate::popup_size::PopupSize::Percent(40)),
+            chrome: Some(crate::popup_size::PopupChrome::Modal),
+        };
+        let mut app = App::new(&config, true, None, api_rx, crate::api::EventHub::default());
+        app.state.workspaces = vec![Workspace::test_new("popup-defaults")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        app.launch_custom_command(
+            crate::config::CustomCommandKeybind {
+                bindings: crate::config::ActionKeybinds::default(),
+                label: "prefix+s".into(),
+                action: crate::config::CustomCommandAction::Popup,
+                command: "sleep 1".into(),
+                description: Some("workspaces".into()),
+                width: None,
+                height: None,
+                chrome: None,
+            },
+            ActionContext::Prefix,
+        );
+
+        app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let (outer, inner) = crate::ui::popup_pane_rects(&app.state, app.state.view.terminal_area)
+            .expect("popup rects");
+        assert_eq!((outer.width, outer.height), (80, 14));
+        assert_eq!((inner.width, inner.height), (77, 10));
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
     }
 
     #[test]

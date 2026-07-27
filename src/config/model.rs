@@ -8,6 +8,7 @@ use super::{
     SoundConfig, ThemeConfig, DEFAULT_ESCAPE_TIME_MS, DEFAULT_MOBILE_WIDTH_THRESHOLD,
     DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
+use crate::popup_size::{PopupChrome, PopupSize};
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
 
@@ -839,6 +840,25 @@ pub struct UiConfig {
     pub toast: ToastConfig,
     /// Play sounds when agents change state in background workspaces.
     pub sound: SoundConfig,
+    /// Fallback geometry and presentation for popup panes.
+    pub popup: PopupConfig,
+}
+
+/// Defaults for popup panes that do not size themselves: `type = "popup"`
+/// keybinds, `plugin.pane.open`, and plugin manifest panes with
+/// `placement = "popup"`. An explicit width, height, or chrome on the popup
+/// itself always wins; these only replace the built-in half-screen fallback,
+/// so a plugin whose manifest declares no size can be resized without editing
+/// the plugin.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct PopupConfig {
+    /// Default popup width as cells or a percentage string. Default: 50%.
+    pub width: Option<PopupSize>,
+    /// Default popup height as cells or a percentage string. Default: 50%.
+    pub height: Option<PopupSize>,
+    /// Default popup presentation: "pane" or "modal". Default: pane.
+    pub chrome: Option<PopupChrome>,
 }
 
 /// Parsed `ui.pane_borders` value: `true` | `false` | `"between"`. The
@@ -1177,6 +1197,7 @@ impl Default for UiConfig {
             dim_unfocused_panes: true,
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
+            popup: PopupConfig::default(),
         }
     }
 }
@@ -1451,6 +1472,26 @@ pane_borders = "fancy"
 "#
         )
         .is_err());
+    }
+
+    #[test]
+    fn popup_defaults_parse_from_ui_section() {
+        let default_config = Config::default();
+        assert_eq!(default_config.ui.popup, PopupConfig::default());
+        assert_eq!(default_config.ui.popup.width, None);
+
+        let config: Config = toml::from_str(
+            r#"
+[ui.popup]
+width = "80%"
+height = 24
+chrome = "modal"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.ui.popup.width, Some(PopupSize::Percent(80)));
+        assert_eq!(config.ui.popup.height, Some(PopupSize::Cells(24)));
+        assert_eq!(config.ui.popup.chrome, Some(PopupChrome::Modal));
     }
 
     #[test]

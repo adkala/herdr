@@ -2067,6 +2067,78 @@ command = ["sh", "-c", "printf %s ${{HERDR_PANE_ID-unset}} > '{}'; sleep 1"]
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn plugin_popup_pane_without_geometry_uses_ui_popup_defaults() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut config = crate::config::Config::default();
+        config.ui.popup = crate::config::PopupConfig {
+            width: Some(crate::popup_size::PopupSize::Percent(80)),
+            height: Some(crate::popup_size::PopupSize::Percent(40)),
+            chrome: Some(crate::popup_size::PopupChrome::Modal),
+        };
+        let mut app = App::new(&config, true, None, api_rx, event_hub.clone());
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("plugin-popup")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = crate::app::Mode::Terminal;
+
+        // No width, height, or chrome anywhere on the plugin side — the config
+        // is the only way to resize this without editing the plugin.
+        let root = unique_temp_path("plugin-popup-config-defaults");
+        write_manifest_content(
+            &root,
+            r#"
+id = "example.popup-defaults"
+name = "Popup Defaults Plugin"
+version = "0.1.0"
+min_herdr_version = "0.6.10"
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "board"
+title = "Plugin Popup"
+placement = "popup"
+command = ["sh", "-c", "sleep 1"]
+"#,
+        );
+        link_manifest(&mut app, &root);
+
+        let open = app.handle_api_request(Request {
+            id: "pane-open-defaults".into(),
+            method: Method::PluginPaneOpen(PluginPaneOpenParams {
+                plugin_id: "example.popup-defaults".into(),
+                entrypoint: "board".into(),
+                placement: None,
+                width: None,
+                height: None,
+                chrome: None,
+                workspace_id: None,
+                target_pane_id: None,
+                direction: None,
+                cwd: None,
+                focus: true,
+                env: std::collections::HashMap::new(),
+            }),
+        });
+        assert_eq!(response_result(&open), ResponseResult::Ok {});
+
+        app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        let (outer, inner) = crate::ui::popup_pane_rects(&app.state, app.state.view.terminal_area)
+            .expect("popup rects");
+        // 80% x 40% of 100x30, grown by the modal header so the content keeps
+        // the 12 rows the same declaration yields under pane chrome.
+        assert_eq!((outer.width, outer.height), (80, 14));
+        assert_eq!((inner.width, inner.height), (77, 10));
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn manifest_action_list_and_invoke_with_context() {
         let mut app = test_app();

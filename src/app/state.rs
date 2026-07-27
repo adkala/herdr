@@ -1561,6 +1561,10 @@ pub struct AppState {
     /// Lone-ESC flush delay (ms) handed to the input reader thread at startup.
     /// Tmux-style `escape-time`; 0 delivers Escape with no delay.
     pub input_escape_time_ms: i32,
+    /// `[ui.popup]` fallbacks for popups that declare no geometry of their own
+    /// — including plugin manifest panes, which is the only way to resize
+    /// those without editing the plugin.
+    pub popup_defaults: crate::config::PopupConfig,
     #[allow(dead_code)] // kept for backward compat; palette.accent is the source of truth
     pub accent: Color,
     pub sound: SoundConfig,
@@ -1933,6 +1937,7 @@ impl AppState {
             new_terminal_cwd: NewTerminalCwdConfig::Follow,
             pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
             input_escape_time_ms: crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
+            popup_defaults: crate::config::PopupConfig::default(),
             accent: Color::Cyan,
             sound: SoundConfig {
                 enabled: false,
