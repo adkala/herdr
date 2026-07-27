@@ -662,6 +662,17 @@ impl App {
             pane_borders: config.ui.pane_borders.enabled(),
             pane_border_between_only: config.ui.pane_borders.between_only(),
             pane_gaps: config.ui.pane_gaps,
+            focused_pane_border: config
+                .ui
+                .focused_pane_border
+                .as_deref()
+                .map(crate::config::parse_color),
+            unfocused_pane_border: config
+                .ui
+                .unfocused_pane_border
+                .as_deref()
+                .map(crate::config::parse_color),
+            dim_unfocused_panes: config.ui.dim_unfocused_panes,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             sidebar_worktree_connectors: config.ui.sidebar_worktree_connectors,
@@ -1478,6 +1489,17 @@ impl App {
                 self.state.pane_borders = config.ui.pane_borders.enabled();
                 self.state.pane_border_between_only = config.ui.pane_borders.between_only();
                 self.state.pane_gaps = config.ui.pane_gaps;
+                self.state.focused_pane_border = config
+                    .ui
+                    .focused_pane_border
+                    .as_deref()
+                    .map(crate::config::parse_color);
+                self.state.unfocused_pane_border = config
+                    .ui
+                    .unfocused_pane_border
+                    .as_deref()
+                    .map(crate::config::parse_color);
+                self.state.dim_unfocused_panes = config.ui.dim_unfocused_panes;
                 self.state.show_agent_labels_on_pane_borders =
                     config.ui.show_agent_labels_on_pane_borders;
                 self.state.hide_tab_bar_when_single_tab = config.ui.hide_tab_bar_when_single_tab;

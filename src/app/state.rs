@@ -1528,6 +1528,13 @@ pub struct AppState {
     /// so `pane_gaps` is ignored when set.
     pub pane_border_between_only: bool,
     pub pane_gaps: bool,
+    /// Border color for the focused pane; `None` falls back to the accent.
+    pub focused_pane_border: Option<Color>,
+    /// Border color for unfocused panes; `None` falls back to the theme's
+    /// muted overlay color.
+    pub unfocused_pane_border: Option<Color>,
+    /// Dim the content of unfocused panes.
+    pub dim_unfocused_panes: bool,
     pub show_agent_labels_on_pane_borders: bool,
     pub hide_tab_bar_when_single_tab: bool,
     pub sidebar_worktree_connectors: bool,
@@ -1908,6 +1915,9 @@ impl AppState {
             pane_borders: true,
             pane_border_between_only: false,
             pane_gaps: false,
+            focused_pane_border: None,
+            unfocused_pane_border: None,
+            dim_unfocused_panes: true,
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
             sidebar_worktree_connectors: true,
