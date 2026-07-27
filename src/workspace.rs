@@ -1512,11 +1512,11 @@ mod tests {
         assert!(first.starts_with('w'));
         assert!(second.starts_with('w'));
         assert_ne!(first, second);
-        assert!(first.len() <= 3, "unexpectedly long workspace id: {first}");
-        assert!(
-            second.len() <= 3,
-            "unexpectedly long workspace id: {second}"
-        );
+        // Length is a property of the encoding, so check it with fixed
+        // inputs instead of the shared counter, whose value depends on how
+        // many workspaces earlier tests allocated.
+        assert_eq!(encode_public_number(1).len(), 1);
+        assert_eq!(encode_public_number(1023).len(), 2);
     }
 
     #[test]
