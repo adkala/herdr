@@ -13,6 +13,7 @@ upstream PR without untangling anything. Staged branches are pushed to `origin`
 | macOS manual artifact builds install patched Homebrew `zig@0.15` instead of setup-zig | `e895ee7` | — | mainly serves this fork's `dev` prerelease builds; upstreamable if wanted |
 | manual artifact builds stamp `HERDR_BUILD_CHANNEL=dev` + `HERDR_BUILD_ID=<short sha>`, so binaries report `herdr <version>-dev.<sha>` | `8b1a3da` | — | fork-only build identity; pairs with the row above |
 | `ui.focused_pane_border` / `ui.unfocused_pane_border` / `ui.dim_unfocused_panes`: separate focused-pane styling like tmux `pane-active-border-style` / `pane-border-style` / `window-style` shading | `49a466c` | `pr/focused-pane-styles` | PR candidate |
+| custom popup keybinds take their border title from `description` instead of always rendering the literal `popup` | `040abb1` | `pr/popup-title-from-description` | PR candidate; upstream has no other way to name a popup — `popup_pane` sits outside any workspace so `pane.rename` cannot reach it, and `$HERDR_PANE_ID` is unset inside one |
 
 ### staged, not on `master`
 
