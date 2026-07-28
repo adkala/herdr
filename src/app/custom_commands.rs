@@ -238,7 +238,18 @@ impl App {
                 width: binding.width,
                 height: binding.height,
             },
-        )
+        )?;
+        // Popup panes live outside any workspace, so pane.rename cannot reach
+        // them and $HERDR_PANE_ID is unset inside one; the binding's own
+        // description is the only thing that can name it.
+        if let Some(description) = binding.description.as_deref() {
+            if let Some(popup) = self.state.popup_pane.as_ref() {
+                if let Some(terminal) = self.state.terminals.get_mut(&popup.terminal_id) {
+                    terminal.set_manual_label(description.to_string());
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn custom_command_env(&self) -> (Vec<(String, String)>, Option<std::path::PathBuf>) {
@@ -764,6 +775,35 @@ mod tests {
         }
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "invoked");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn popup_commands_take_their_title_from_the_binding_description() {
+        let mut app = test_app();
+        // Popups open relative to the active workspace's cwd.
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        let mut popup = binding(crate::config::CustomCommandAction::Popup);
+        popup.command = "sleep 1".into();
+        popup.description = Some("git ui".into());
+
+        app.execute_custom_command_binding(&popup, None)
+            .expect("popup command should spawn");
+
+        let popup_terminal_id = app
+            .state
+            .popup_pane
+            .as_ref()
+            .expect("popup pane should open")
+            .terminal_id
+            .clone();
+        assert_eq!(
+            app.state.terminals[&popup_terminal_id]
+                .manual_label
+                .as_deref(),
+            Some("git ui")
+        );
     }
 
     #[test]
