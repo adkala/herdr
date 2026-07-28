@@ -1,3 +1,52 @@
+## fork changes (adkala/herdr)
+
+This fork carries the changes below on `master`. Each is meant to stay
+cherry-pickable onto the current `origin/master`
+([ogulcancelik/herdr](https://github.com/ogulcancelik/herdr)), so it can become an
+upstream PR without untangling anything. Staged branches are local-only until
+pushed.
+
+| change | commit on `master` | staged branch | notes |
+| --- | --- | --- | --- |
+| `advanced.escape_time_ms`: configurable lone-Escape flush delay, like tmux `escape-time` (default 10ms) | `5c66609` | — | PR candidate; lives on `master` only |
+| `advanced.osc52_paste`: opt-in OSC 52 paste support — answers `OSC 52 ; c ; ?` clipboard read queries (off by default). `true`/`"server"` replies with the server machine's clipboard; `"terminal"` forwards the query to the local terminal so panes paste from the local clipboard over ssh | `c8f9a53`, `b7cf3dd`, `59214d5` (e2e test), `a3d6b5c` (docs) | — | PR candidate; lives on `master` only |
+| macOS manual artifact builds install patched Homebrew `zig@0.15` instead of setup-zig | `e895ee7` | — | mainly serves this fork's `dev` prerelease builds; upstreamable if wanted |
+| manual artifact builds stamp `HERDR_BUILD_CHANNEL=dev` + `HERDR_BUILD_ID=<short sha>`, so binaries report `herdr <version>-dev.<sha>` | `8b1a3da` | — | fork-only build identity; pairs with the row above |
+| `ui.focused_pane_border` / `ui.unfocused_pane_border` / `ui.dim_unfocused_panes`: separate focused-pane styling like tmux `pane-active-border-style` / `pane-border-style` / `window-style` shading | `49a466c` | `pr/focused-pane-styles` | PR candidate |
+
+### staged, not on `master`
+
+Reverted from `master` on 2026-07-27: each needs more work before it ships on the
+`dev` channel. Every one is intact on the branch below — nothing was discarded.
+`master` was rebuilt as upstream `bb29eed` plus the rows above, and the
+pre-revert tip is kept at `backup/master-f2facce`.
+
+To reinstate one, cherry-pick its branch onto `master` and move its row up.
+
+| change | branch | why it came off |
+| --- | --- | --- |
+| `ui.sidebar_worktree_connectors`: set `false` to drop the worktree tree connectors (`├─`/`└─`) and trailing group chevron added by upstream #1873, restoring the flat indent style with a leading chevron | `pr/sidebar-worktree-connectors` | needs more work |
+| popup `chrome = "modal"`: popup panes (`plugin.pane.open`, `herdr plugin pane open --chrome`, `type = "popup"` keybinds) render with the built-in settings overlay treatment — dimmed backdrop, panel shell, bold title header row; popup keybinds title the header from `description` | `pr/popup-modal-chrome` | needs more work |
+| `ui.pane_borders = "between"`: tmux-style near-borderless splits — only the shared divider between panes is drawn, no outer frame; zoomed/single panes draw nothing | `pr/split-only-pane-borders` | needs more work; it changes an existing key's type, so it also needs the `[hdev]` overlay below |
+| `[ui.popup]`: fallback `width`/`height`/`chrome` for popups that declare none — the only way to resize a plugin manifest pane without editing the plugin | `pr/popup-geometry-defaults` | needs more work; stacked on `pr/popup-modal-chrome` (needs `chrome`) and `pr/workspace-id-test-isolation` |
+| `HERDR_BIN_PATH` in every pane, not just plugin commands, plugin panes, and custom command keybinds — panes already get the socket, so they can address the server but still have to guess a client, and the API rejects a protocol mismatch outright | `pr/pane-bin-path` | needs more work |
+| workspace id length test no longer depends on how many workspaces earlier tests allocated from the global counter | `pr/workspace-id-test-isolation` | test-only; came off with `pr/popup-geometry-defaults`, the only thing that needed it |
+| `[hdev]` config overlay: tables under `[hdev]` are deep-merged over the matching top-level sections before the config is deserialized, so one `config.toml` works on both binaries | `fork/hdev-config-overlay` | **fork-only, never upstream**; only earns its keep while a fork patch changes an existing key's *type* (see `ui.pane_borders`), and none currently do |
+
+To open a PR later:
+
+```bash
+git push fork <branch>
+gh pr create --repo ogulcancelik/herdr --head adkala:<branch>
+```
+
+When adding a new change, commit it on a `pr/<slug>` branch based on
+`origin/master`, cherry-pick it into `master`, and add a row above. Branches that
+must never go upstream take the `fork/<slug>` prefix instead, so `pr/*` stays a
+safe glob to push.
+
+---
+
 # herdr
 
 
