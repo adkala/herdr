@@ -812,7 +812,18 @@ impl App {
                 width: binding.width,
                 height: binding.height,
             },
-        )
+        )?;
+        // Popup panes live outside any workspace, so pane.rename cannot reach
+        // them and $HERDR_PANE_ID is unset inside one — the binding's own
+        // description is the only thing that can name it.
+        if let Some(description) = binding.description.as_deref() {
+            if let Some(popup) = self.state.popup_pane.as_ref() {
+                if let Some(terminal) = self.state.terminals.get_mut(&popup.terminal_id) {
+                    terminal.set_manual_label(description.to_string());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn custom_command_env(&self) -> (Vec<(String, String)>, Option<std::path::PathBuf>) {
