@@ -1,10 +1,10 @@
 ## fork changes (adkala/herdr)
 
 This fork carries the changes below on `master`. Each is meant to stay
-cherry-pickable onto the current `origin/master`
+cherry-pickable onto the current `upstream/master`
 ([ogulcancelik/herdr](https://github.com/ogulcancelik/herdr)), so it can become an
-upstream PR without untangling anything. Staged branches are local-only until
-pushed.
+upstream PR without untangling anything. Staged branches are pushed to `origin`
+(this fork), so a fresh clone has them.
 
 | change | commit on `master` | staged branch | notes |
 | --- | --- | --- | --- |
@@ -36,14 +36,14 @@ To reinstate one, cherry-pick its branch onto `master` and move its row up.
 To open a PR later:
 
 ```bash
-git push fork <branch>
+git push origin <branch>
 gh pr create --repo ogulcancelik/herdr --head adkala:<branch>
 ```
 
 When adding a new change, commit it on a `pr/<slug>` branch based on
-`origin/master`, cherry-pick it into `master`, and add a row above. Branches that
-must never go upstream take the `fork/<slug>` prefix instead, so `pr/*` stays a
-safe glob to push.
+`upstream/master`, cherry-pick it into `master`, and add a row above. Branches
+that must never go upstream take the `fork/<slug>` prefix instead, so `pr/*`
+stays a safe glob to push.
 
 ---
 
