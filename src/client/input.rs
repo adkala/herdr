@@ -35,15 +35,23 @@ mod windows_vti;
 /// This runs on a dedicated thread because stdin reading is blocking.
 /// The main loop receives the raw bytes and forwards them as
 /// `ClientMessage::Input` to the server.
+///
+/// `escape_time_ms` is the configured lone-ESC flush delay (`advanced.escape_time_ms`,
+/// tmux-style `escape-time`). `None` keeps the built-in windows.
 pub fn stdin_reader_loop(
     event_tx: mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
     host_color_query_sent: bool,
     host_mouse_capture_active: Arc<AtomicBool>,
+    escape_time_ms: Option<i32>,
 ) {
     #[cfg(windows)]
     {
-        let _ = (host_color_query_sent, host_mouse_capture_active);
+        let _ = (
+            host_color_query_sent,
+            host_mouse_capture_active,
+            escape_time_ms,
+        );
         windows_stdin_reader_loop(event_tx, should_quit);
     }
 
@@ -53,6 +61,8 @@ pub fn stdin_reader_loop(
         should_quit,
         host_color_query_sent,
         host_mouse_capture_active,
+        // poll() blocks forever on a negative timeout; clamp so config can't hang input.
+        escape_time_ms.map(|ms| ms.max(0)),
     );
 }
 
@@ -62,6 +72,7 @@ fn unix_stdin_reader_loop(
     should_quit: &Arc<AtomicBool>,
     host_color_query_sent: bool,
     host_mouse_capture_active: Arc<AtomicBool>,
+    escape_time_ms: Option<i32>,
 ) {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
@@ -88,6 +99,7 @@ fn unix_stdin_reader_loop(
                 let timeout_ms = idle_flush_timeout_ms(
                     &framer,
                     host_mouse_capture_active.load(Ordering::Acquire),
+                    escape_time_ms,
                 );
                 if stdin_read_ready(&reader, timeout_ms) == Some(false) {
                     let had_pending = framer.has_pending_input();
@@ -99,10 +111,8 @@ fn unix_stdin_reader_loop(
                         return;
                     }
                     if held_escape
-                        && stdin_read_ready(
-                            &reader,
-                            crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
-                        ) == Some(false)
+                        && stdin_read_ready(&reader, held_escape_grace_timeout_ms(escape_time_ms))
+                            == Some(false)
                         && !send_unix_input_chunks(
                             framer.flush_timeout(),
                             &event_tx,
@@ -173,18 +183,43 @@ fn flush_unix_palette_input(
         .is_ok()
 }
 
+/// How long to wait for a continuation byte before flushing the framer.
+///
+/// `escape_time_ms` is `advanced.escape_time_ms`. When set it owns the lone-ESC
+/// window, so `0` delivers Escape immediately like tmux `escape-time 0`. A
+/// partial SGR mouse report keeps the long reassembly window regardless: those
+/// bytes are unambiguously mid-sequence, so holding them is not the latency the
+/// Escape knob is about.
 #[cfg(unix)]
 fn idle_flush_timeout_ms(
     framer: &crate::raw_input::RawInputByteFramer,
     host_mouse_capture_active: bool,
+    escape_time_ms: Option<i32>,
 ) -> i32 {
-    if host_mouse_capture_active
-        && (framer.has_pending_lone_escape() || framer.has_pending_incomplete_sgr_mouse_sequence())
-    {
-        crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
-    } else {
-        crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+    if host_mouse_capture_active && framer.has_pending_incomplete_sgr_mouse_sequence() {
+        return crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS;
     }
+    if framer.has_pending_lone_escape() {
+        if let Some(escape_time_ms) = escape_time_ms {
+            return escape_time_ms;
+        }
+        // Unset: keep the built-in tier that lets a mouse report whose ESC landed
+        // alone in one read still reassemble.
+        if host_mouse_capture_active {
+            return crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS;
+        }
+    }
+    crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+}
+
+/// One-shot grace re-poll after a flush held an incomplete sequence (host color
+/// reply, split UTF-8/paste). Capped at the built-in idle window so a large
+/// `escape_time_ms` cannot double the wait, but honours `0` so immediate stays
+/// immediate.
+#[cfg(unix)]
+fn held_escape_grace_timeout_ms(escape_time_ms: Option<i32>) -> i32 {
+    let idle = crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS;
+    escape_time_ms.map(|ms| ms.min(idle)).unwrap_or(idle)
 }
 
 #[cfg(windows)]
@@ -521,24 +556,66 @@ mod tests {
 
         for framer in [&escape, &mouse, &unrelated] {
             assert_eq!(
-                idle_flush_timeout_ms(framer, false),
+                idle_flush_timeout_ms(framer, false, None),
                 crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
             );
         }
         for framer in [&escape, &mouse] {
             assert_eq!(
-                idle_flush_timeout_ms(framer, true),
+                idle_flush_timeout_ms(framer, true, None),
                 crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
             );
         }
         assert_eq!(
-            idle_flush_timeout_ms(&unrelated, true),
+            idle_flush_timeout_ms(&unrelated, true, None),
             crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
         );
 
         let mouse_timeout_ms =
             std::hint::black_box(crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS);
         assert!(mouse_timeout_ms > 100);
+    }
+
+    #[test]
+    fn configured_escape_time_owns_the_lone_escape_window() {
+        let mut escape = crate::raw_input::RawInputByteFramer::default();
+        assert!(escape.push(b"\x1b").is_empty());
+
+        // This is the regression the fork's escape_time_ms patch originally
+        // missed: the thin client hardcoded its window, so the key did nothing.
+        // Zero must mean zero even while mouse capture holds the 150ms tier.
+        assert_eq!(idle_flush_timeout_ms(&escape, true, Some(0)), 0);
+        assert_eq!(idle_flush_timeout_ms(&escape, false, Some(0)), 0);
+        assert_eq!(idle_flush_timeout_ms(&escape, true, Some(500)), 500);
+        assert_eq!(idle_flush_timeout_ms(&escape, false, Some(500)), 500);
+    }
+
+    #[test]
+    fn configured_escape_time_leaves_partial_mouse_reports_alone() {
+        // A half-read SGR mouse report is unambiguously mid-sequence, so it keeps
+        // the long reassembly window even at escape_time_ms = 0.
+        let mut mouse = crate::raw_input::RawInputByteFramer::default();
+        assert!(mouse.push(b"\x1b[<3").is_empty());
+
+        assert_eq!(
+            idle_flush_timeout_ms(&mouse, true, Some(0)),
+            crate::raw_input::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
+        );
+        // Without mouse capture there is no mouse report to protect, and a
+        // partial `\x1b[<` is not a lone Escape, so the idle window applies.
+        assert_eq!(
+            idle_flush_timeout_ms(&mouse, false, Some(0)),
+            crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+        );
+    }
+
+    #[test]
+    fn held_escape_grace_is_capped_but_honours_zero() {
+        let idle = crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS;
+        assert_eq!(held_escape_grace_timeout_ms(None), idle);
+        assert_eq!(held_escape_grace_timeout_ms(Some(0)), 0);
+        // A large escape_time_ms must not double the wait on the one-shot grace.
+        assert_eq!(held_escape_grace_timeout_ms(Some(500)), idle);
     }
 }
 

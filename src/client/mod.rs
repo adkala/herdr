@@ -59,6 +59,9 @@ struct ClientLoopConfig {
     host_cursor: crate::config::HostCursorModeConfig,
     kitty_graphics_enabled: bool,
     mouse_capture_active: bool,
+    /// `advanced.escape_time_ms`: lone-ESC flush delay for the stdin reader.
+    /// `None` keeps the reader's built-in windows.
+    escape_time_ms: Option<i32>,
     #[cfg(unix)]
     remote_image_paste_key: Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
 }
@@ -1137,6 +1140,7 @@ fn run_client_with_mode(
         host_cursor,
         kitty_graphics_enabled,
         mouse_capture_active: mouse_capture,
+        escape_time_ms: loaded_config.config.advanced.escape_time_ms.map(i32::from),
         #[cfg(unix)]
         remote_image_paste_key,
     };
@@ -1288,6 +1292,7 @@ async fn run_client_loop(
     #[cfg(windows)]
     let _ = config.mouse_scroll_lines;
     let draw_host_cursor = attach_escape.is_none() && should_draw_host_cursor(config.host_cursor);
+    let escape_time_ms = config.escape_time_ms;
     #[cfg(unix)]
     let is_remote_client = is_remote_client_process();
 
@@ -1319,12 +1324,14 @@ async fn run_client_loop(
     let stdin_quit = should_quit.clone();
     let stdin_tx = event_tx.clone();
     let stdin_mouse_capture_active = host_mouse_capture_active.clone();
+    let stdin_escape_time_ms = escape_time_ms;
     std::thread::spawn(move || {
         input::stdin_reader_loop(
             stdin_tx,
             &stdin_quit,
             will_query_host_terminal_theme,
             stdin_mouse_capture_active,
+            stdin_escape_time_ms,
         );
     });
 

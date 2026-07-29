@@ -311,6 +311,14 @@ command = "echo one"
     }
 
     #[test]
+    fn escape_time_is_unset_by_default() {
+        // Unset must stay None so the input readers keep their built-in flush
+        // windows; a numeric default would silently collapse the mouse-capture
+        // tier to the idle one.
+        assert_eq!(Config::default().advanced.escape_time_ms, None);
+    }
+
+    #[test]
     fn ui_host_cursor_defaults_to_auto_and_parses_overrides() {
         let default_config = Config::default();
         assert_eq!(default_config.ui.host_cursor, HostCursorModeConfig::Auto);
