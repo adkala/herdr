@@ -8,7 +8,7 @@ upstream PR without untangling anything. Staged branches are pushed to `origin`
 
 | change | commit on `master` | staged branch | notes |
 | --- | --- | --- | --- |
-| `advanced.escape_time_ms`: configurable lone-Escape flush delay, like tmux `escape-time` (default 10ms) | `5c66609` | — | PR candidate; lives on `master` only |
+| `advanced.escape_time_ms`: configurable lone-Escape flush delay, like tmux `escape-time` (default unset — 10ms, or 150ms while mouse capture holds a pending Escape) | `5c66609`, `caf7e87` (thin-client fix), `50daaeb` (docs) | `pr/escape-time-ms` | PR candidate. `5c66609` alone was inert: it wired the key only into the in-process reader, while the thin client hardcoded its flush window, so the key measured the same at `0`, unset, and `500`. The branch squashes all three into one cherry-pickable commit |
 | `advanced.osc52_paste`: opt-in OSC 52 paste support — answers `OSC 52 ; c ; ?` clipboard read queries (off by default). `true`/`"server"` replies with the server machine's clipboard; `"terminal"` forwards the query to the local terminal so panes paste from the local clipboard over ssh | `c8f9a53`, `b7cf3dd`, `59214d5` (e2e test), `a3d6b5c` (docs) | — | PR candidate; lives on `master` only |
 | macOS manual artifact builds install patched Homebrew `zig@0.15` instead of setup-zig | `e895ee7` | — | mainly serves this fork's `dev` prerelease builds; upstreamable if wanted |
 | manual artifact builds stamp `HERDR_BUILD_CHANNEL=dev` + `HERDR_BUILD_ID=<short sha>`, so binaries report `herdr <version>-dev.<sha>` | `8b1a3da` | — | fork-only build identity; pairs with the row above |
