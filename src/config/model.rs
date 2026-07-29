@@ -5,8 +5,8 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
     ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
-    SoundConfig, ThemeConfig, DEFAULT_ESCAPE_TIME_MS, DEFAULT_MOBILE_WIDTH_THRESHOLD,
-    DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    SoundConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD, DEFAULT_MOUSE_SCROLL_LINES,
+    DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
@@ -870,8 +870,13 @@ pub struct AdvancedConfig {
     /// Milliseconds to wait after a lone ESC before delivering it to the focused
     /// pane, so multi-byte escape sequences (arrow keys, Alt chords) can
     /// reassemble instead of leaking a bare Escape. Set to 0 for no delay, like
-    /// tmux `escape-time 0`. Default: 10.
-    pub escape_time_ms: u16,
+    /// tmux `escape-time 0`.
+    ///
+    /// Default: unset, which keeps Herdr's built-in two-tier behavior — 10ms
+    /// normally, but 150ms while the outer terminal has mouse capture active and
+    /// an Escape is pending, so SGR mouse reports split across reads still
+    /// reassemble. Setting this collapses both tiers to the configured value.
+    pub escape_time_ms: Option<u16>,
     /// Answer OSC 52 clipboard read queries (`ESC ] 52 ; c ; ?`) from pane
     /// applications (paste support). `false` ignores queries, `true` answers
     /// with the clipboard of the machine running the Herdr server, and
@@ -1184,7 +1189,7 @@ impl Default for AdvancedConfig {
     fn default() -> Self {
         Self {
             scrollback_limit_bytes: DEFAULT_SCROLLBACK_LIMIT_BYTES,
-            escape_time_ms: DEFAULT_ESCAPE_TIME_MS,
+            escape_time_ms: None,
             osc52_paste: Osc52PasteConfig::Off,
         }
     }
@@ -1783,17 +1788,16 @@ delay_seconds = {}
     }
 
     #[test]
-    fn escape_time_defaults_to_ten_and_parses_zero() {
-        assert_eq!(
-            Config::default().advanced.escape_time_ms,
-            DEFAULT_ESCAPE_TIME_MS
-        );
+    fn escape_time_defaults_to_unset_and_parses_zero() {
+        // Unset must stay None rather than defaulting to a number, so the input
+        // reader can keep its built-in two-tier behavior untouched.
+        assert_eq!(Config::default().advanced.escape_time_ms, None);
 
         let config: Config = toml::from_str("[advanced]\nescape_time_ms = 0\n").unwrap();
-        assert_eq!(config.advanced.escape_time_ms, 0);
+        assert_eq!(config.advanced.escape_time_ms, Some(0));
 
         let config: Config = toml::from_str("[advanced]\nescape_time_ms = 25\n").unwrap();
-        assert_eq!(config.advanced.escape_time_ms, 25);
+        assert_eq!(config.advanced.escape_time_ms, Some(25));
     }
 
     #[test]

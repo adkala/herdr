@@ -687,7 +687,11 @@ impl App {
             shell_mode: config.terminal.shell_mode,
             new_terminal_cwd: config.terminal.new_cwd.clone(),
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
-            input_escape_time_ms: i32::from(config.advanced.escape_time_ms),
+            input_escape_time_ms: config
+                .advanced
+                .escape_time_ms
+                .map(i32::from)
+                .unwrap_or(crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS),
             accent: crate::config::parse_color(&config.ui.accent),
             sound: config.ui.sound.clone(),
             local_sound_playback: true,

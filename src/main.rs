@@ -422,6 +422,13 @@ pane_history = false
 # Maximum scrollback buffer size in bytes retained per pane terminal.
 # Matches Ghostty's default scrollback-limit behavior.
 # scrollback_limit_bytes = 10000000
+# Milliseconds to wait after a lone Escape before delivering it to the focused
+# pane, so multi-byte sequences (arrow keys, Alt chords) can reassemble instead
+# of leaking a bare Escape. Set to 0 for no delay, like tmux `escape-time 0`.
+# Leave unset for the built-in behavior: 10ms normally, 150ms while the terminal
+# has mouse capture active and an Escape is pending. Terminals that answer
+# Herdr's Kitty keyboard push send Escape as a full sequence and never wait.
+# escape_time_ms = 10
 "##;
 
 // Bundled at build time so the printed skill always matches this binary's release.
