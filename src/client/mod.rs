@@ -225,6 +225,7 @@ fn run_client_with_mode(
         host_sgr_pixel_mouse: None,
         initial_host_input: Vec::new(),
         endpoint_keybindings,
+        escape_time_ms: loaded_config.config.advanced.escape_time_ms.map(i32::from),
         remote_image_paste_key,
         shell_config,
     };
@@ -449,6 +450,7 @@ async fn run_client_loop(
     #[cfg(windows)]
     let _ = config.mouse_scroll_lines;
     let draw_host_cursor = attach_escape.is_none() && should_draw_host_cursor(config.host_cursor);
+    let escape_time_ms = config.escape_time_ms;
     let is_remote_client = is_remote_client_process();
     let local_unavailable = initial.is_none();
 
@@ -560,6 +562,7 @@ async fn run_client_loop(
         .lock()
         .map(|matcher| matcher.active_handle())
         .unwrap_or_default();
+    let stdin_escape_time_ms = escape_time_ms;
     std::thread::spawn(move || {
         input::stdin_reader_loop(
             stdin_tx,
@@ -575,6 +578,7 @@ async fn run_client_loop(
             stdin_direct_response,
             #[cfg(unix)]
             stdin_direct_response_active,
+            stdin_escape_time_ms,
         );
     });
 

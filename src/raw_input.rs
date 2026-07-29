@@ -475,6 +475,12 @@ impl RawInputByteFramer {
         RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
     }
 
+    /// A lone pending ESC: the one prefix `advanced.escape_time_ms` times.
+    #[cfg(unix)]
+    pub(crate) fn has_pending_lone_escape(&self) -> bool {
+        self.buffer.as_slice() == [ESC]
+    }
+
     /// How long to keep holding input after a first idle flush held it.
     #[cfg(unix)]
     pub(crate) fn held_input_flush_timeout_ms(&self) -> i32 {
