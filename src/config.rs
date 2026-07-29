@@ -75,9 +75,6 @@ pub(crate) fn config_diagnostic_summary_without_keybindings(
 }
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
-/// Default lone-ESC flush delay (ms). Kept in sync with
-/// `raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS` by `escape_time_default_matches_idle_flush`.
-pub const DEFAULT_ESCAPE_TIME_MS: u16 = 10;
 pub const DEFAULT_MOBILE_WIDTH_THRESHOLD: u16 = 64;
 pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
@@ -401,13 +398,11 @@ command = "echo one"
     }
 
     #[test]
-    fn escape_time_default_matches_idle_flush() {
-        // The default must equal the reader's hardcoded idle flush so unset
-        // config keeps the previous Escape-handling behavior.
-        assert_eq!(
-            i32::from(DEFAULT_ESCAPE_TIME_MS),
-            crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
-        );
+    fn escape_time_is_unset_by_default() {
+        // Unset must stay None so the input readers keep their built-in flush
+        // windows; a numeric default would silently collapse the mouse-capture
+        // tier to the idle one.
+        assert_eq!(Config::default().advanced.escape_time_ms, None);
     }
 
     #[test]

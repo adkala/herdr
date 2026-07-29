@@ -10,6 +10,9 @@ pub(super) struct ClientLoopConfig {
     pub(super) pixel_geometry_fallback: bool,
     pub(super) mouse_capture_active: bool,
     pub(super) endpoint_keybindings: bool,
+    /// `advanced.escape_time_ms`: lone-ESC flush delay for the stdin reader.
+    /// `None` keeps the reader's built-in windows.
+    pub(super) escape_time_ms: Option<i32>,
     pub(super) remote_image_paste_key:
         Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
     pub(super) shell_config: Option<shell::ClientShellConfig>,
