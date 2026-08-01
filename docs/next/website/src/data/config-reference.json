@@ -653,6 +653,12 @@
           "description": "Draw borders around split panes."
         },
         {
+          "key": "ui.outer_pane_borders",
+          "type": "boolean",
+          "default": "true",
+          "description": "Draw the outer frame around the pane grid. Set false to keep only the shared dividers between panes, like tmux. Ignored when ui.pane_borders is false; implies shared dividers, so ui.pane_gaps is ignored when it is off."
+        },
+        {
           "key": "ui.pane_gaps",
           "type": "boolean",
           "default": "true",

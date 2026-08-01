@@ -1522,6 +1522,10 @@ pub struct AppState {
     pub prompt_new_tab_name: bool,
     pub prompt_new_workspace_name: bool,
     pub pane_borders: bool,
+    /// Draw only the shared split dividers, with no outer pane frame (tmux
+    /// style). Only meaningful while `pane_borders` is true; implies shared
+    /// dividers, so `pane_gaps` is ignored when set.
+    pub pane_border_between_only: bool,
     pub pane_gaps: bool,
     pub show_agent_labels_on_pane_borders: bool,
     pub hide_tab_bar_when_single_tab: bool,
@@ -1898,6 +1902,7 @@ impl AppState {
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
             pane_borders: true,
+            pane_border_between_only: false,
             pane_gaps: false,
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
