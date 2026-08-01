@@ -660,6 +660,7 @@ impl App {
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
             prompt_new_workspace_name: config.ui.prompt_new_workspace_name,
             pane_borders: config.ui.pane_borders,
+            pane_border_between_only: !config.ui.outer_pane_borders,
             pane_gaps: config.ui.pane_gaps,
             focused_pane_border: config
                 .ui
@@ -1489,6 +1490,7 @@ impl App {
                 self.state.prompt_new_tab_name = config.ui.prompt_new_tab_name;
                 self.state.prompt_new_workspace_name = config.ui.prompt_new_workspace_name;
                 self.state.pane_borders = config.ui.pane_borders;
+                self.state.pane_border_between_only = !config.ui.outer_pane_borders;
                 self.state.pane_gaps = config.ui.pane_gaps;
                 self.state.focused_pane_border = config
                     .ui

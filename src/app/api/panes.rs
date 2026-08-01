@@ -1689,6 +1689,7 @@ impl App {
             tab.layout.panes(area),
             self.state.pane_borders,
             self.state.pane_gaps,
+            self.state.pane_border_between_only,
         )
         .into_iter()
         .filter_map(|pane| {

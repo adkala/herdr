@@ -304,6 +304,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Draw borders around split panes.
 # pane_borders = true
 
+# Draw the outer frame around the pane grid. Set false to keep only the shared
+# dividers between panes, like tmux. Implies shared dividers, so pane_gaps is
+# ignored when this is off.
+# outer_pane_borders = true
+
 # Keep split panes visually separated instead of sharing divider borders.
 # pane_gaps = true
 
