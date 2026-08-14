@@ -19,8 +19,9 @@ upstream PR without untangling anything. Staged branches are pushed to `origin`
 
 Reverted from `master` on 2026-07-27: each needs more work before it ships on the
 `dev` channel. Every one is intact on the branch below — nothing was discarded.
-`master` was most recently rebuilt on upstream `952729e` (2026-08-13); the tip
-before that rebuild is kept at `backup/master-0aed437`. The earlier 2026-07-27
+`master` was most recently rebuilt on upstream `d76657f` (2026-08-14); the tip
+before that rebuild is kept at `backup/master-54fe477`. The prior rebuild (onto
+`952729e`, 2026-08-13) is at `backup/master-0aed437`, and the earlier 2026-07-27
 pre-revert tip is at `backup/master-f2facce`.
 
 To reinstate one, cherry-pick its branch onto `master` and move its row up.
