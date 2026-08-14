@@ -14,22 +14,23 @@ upstream PR without untangling anything. Staged branches are pushed to `origin`
 | manual artifact builds stamp `HERDR_BUILD_CHANNEL=dev` + `HERDR_BUILD_ID=<short sha>`, so binaries report `herdr <version>-dev.<sha>` | `8b1a3da` | — | fork-only build identity; pairs with the row above |
 | `ui.focused_pane_border` / `ui.unfocused_pane_border` / `ui.dim_unfocused_panes`: separate focused-pane styling like tmux `pane-active-border-style` / `pane-border-style` / `window-style` shading | `49a466c` | `pr/focused-pane-styles` | PR candidate |
 | custom popup keybinds take their border title from `description` instead of always rendering the literal `popup` | `040abb1` | `pr/popup-title-from-description` | PR candidate; upstream has no other way to name a popup — `popup_pane` sits outside any workspace so `pane.rename` cannot reach it, and `$HERDR_PANE_ID` is unset inside one |
-| `ui.outer_pane_borders = false`: tmux-style near-borderless splits — only the shared dividers between panes are drawn, no outer frame; zoomed/single panes draw nothing | `22c351e` | `pr/outer-pane-borders` | PR candidate. Replaces the reverted `ui.pane_borders = "between"` below: a new boolean is purely additive, so stock herdr warns about the unknown key and keeps the rest of the config instead of discarding the file over a changed key type — no `[hdev]` overlay needed. Divider color is tmux-exact (a cell is focused-styled when it lies on the focused pane's border), which is what the earlier attempt looked wrong doing |
 
 ### staged, not on `master`
 
 Reverted from `master` on 2026-07-27: each needs more work before it ships on the
 `dev` channel. Every one is intact on the branch below — nothing was discarded.
-`master` was rebuilt as upstream `bb29eed` plus the rows above, and the
-pre-revert tip is kept at `backup/master-f2facce`.
+`master` was most recently rebuilt on upstream `952729e` (2026-08-13); the tip
+before that rebuild is kept at `backup/master-0aed437`. The earlier 2026-07-27
+pre-revert tip is at `backup/master-f2facce`.
 
 To reinstate one, cherry-pick its branch onto `master` and move its row up.
 
 | change | branch | why it came off |
 | --- | --- | --- |
 | ~~`ui.sidebar_worktree_connectors`~~ | *(branch deleted 2026-08-05)* | dropped: upstream #1873's tree connectors are the native sidebar style now; a toggle to revert them isn't worth carrying |
+| ~~`ui.outer_pane_borders = false`~~ | `pr/outer-pane-borders` | dropped 2026-08-13: upstream #2535 shipped `ui.pane_outer_borders` as the native toggle, so the fork's overlapping key came off rather than carry two spellings of the same feature. The fork's take was richer (tmux-exact divider coloring, gapless splits, mouse hit-testing); the branch is kept for reference if upstream's simpler version proves insufficient |
 | ~~popup `chrome = "modal"`~~ | *(branch deleted 2026-07-27)* | dropped: upstream popups already draw an accent border, an in-border title, and an opaque panel background (`PopupChrome::Pane`), so the patch only added a dimmed backdrop and a second header row. Not worth carrying. The commit survives inside `pr/popup-geometry-defaults`, and the master-side originals in `backup/master-f2facce` |
-| ~~`ui.pane_borders = "between"`~~ | `pr/split-only-pane-borders` | superseded 2026-08-01 by `ui.outer_pane_borders` on `master`. Came off because the divider read as one flat color; that is actually tmux's own behavior for a two-pane split (the single divider borders both panes, so it highlights either way), and the replacement keeps it deliberately. The real problem was the spelling: overloading `pane_borders` changed a key's type and dragged in the `[hdev]` overlay. Branch kept for reference only |
+| ~~`ui.pane_borders = "between"`~~ | `pr/split-only-pane-borders` | superseded 2026-08-01 by `ui.outer_pane_borders` (itself dropped 2026-08-13 once upstream #2535 landed `ui.pane_outer_borders` — see the row above). Came off because the divider read as one flat color; that is actually tmux's own behavior for a two-pane split (the single divider borders both panes, so it highlights either way), and the replacement keeps it deliberately. The real problem was the spelling: overloading `pane_borders` changed a key's type and dragged in the `[hdev]` overlay. Branch kept for reference only |
 | `[ui.popup]`: fallback `width`/`height`/`chrome` for popups that declare none — the only way to resize a plugin manifest pane without editing the plugin | `pr/popup-geometry-defaults` | needs more work; carries the deleted modal-chrome commit as its base (it needs `chrome`), so strip that out before this could go upstream. Also stacked on `pr/workspace-id-test-isolation` |
 | `HERDR_BIN_PATH` in every pane, not just plugin commands, plugin panes, and custom command keybinds — panes already get the socket, so they can address the server but still have to guess a client, and the API rejects a protocol mismatch outright | `pr/pane-bin-path` | needs more work |
 | workspace id length test no longer depends on how many workspaces earlier tests allocated from the global counter | `pr/workspace-id-test-isolation` | test-only; came off with `pr/popup-geometry-defaults`, the only thing that needed it |
