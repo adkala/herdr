@@ -1448,6 +1448,12 @@
           "type": "integer",
           "default": "10000000",
           "description": "Maximum scrollback buffer size in bytes retained per pane terminal. The legacy key name `scrollback_lines` is accepted as an alias."
+        },
+        {
+          "key": "advanced.escape_time_ms",
+          "type": "integer",
+          "default": "unset",
+          "description": "Milliseconds to wait after a lone Escape before delivering it to the focused pane, so multi-byte escape sequences (arrow keys, Alt chords) can reassemble instead of leaking a bare Escape. Set to 0 for no delay, like tmux `escape-time 0`; best on fast, local terminals. Leave unset for the built-in behavior: 10ms normally, 150ms while the terminal has mouse capture active and an Escape is pending. Only affects terminals that send a bare Escape byte — those that answer Herdr's Kitty keyboard push deliver Escape as a full sequence with no wait."
         }
       ]
     },
