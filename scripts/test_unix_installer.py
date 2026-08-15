@@ -33,20 +33,7 @@ class UnixInstallerTests(unittest.TestCase):
                 self.fail(f"test host is missing required command: {command}")
             (self.bin_dir / command).symlink_to(path)
 
-        self._write_executable(
-            "uname",
-            """#!/bin/sh
-case "$1" in
-  -s) echo Linux ;;
-  -m) echo x86_64 ;;
-  -o)
-    [ "${FAKE_UNAME_OS_UNAVAILABLE:-}" != "1" ] || exit 1
-    echo "${FAKE_UNAME_OS:-GNU/Linux}"
-    ;;
-  *) exit 1 ;;
-esac
-""",
-        )
+        self._write_uname("Darwin")
         self._write_executable(
             "curl",
             """#!/bin/sh
@@ -75,6 +62,22 @@ fi
         path = self.bin_dir / name
         path.write_text(content, encoding="utf-8")
         path.chmod(0o755)
+
+    def _write_uname(self, os_name: str, arch: str = "x86_64") -> None:
+        self._write_executable(
+            "uname",
+            f"""#!/bin/sh
+case "$1" in
+  -s) echo {os_name} ;;
+  -m) echo {arch} ;;
+  -o)
+    [ "${{FAKE_UNAME_OS_UNAVAILABLE:-}}" != "1" ] || exit 1
+    echo "${{FAKE_UNAME_OS:-GNU/Linux}}"
+    ;;
+  *) exit 1 ;;
+esac
+""",
+        )
 
     def _select_checksum_tool(self, tool: str) -> None:
         if tool == "sha256sum":
@@ -107,15 +110,15 @@ exec {sha256sum} "$@"
 
         self.fail(f"unknown checksum tool fixture: {tool}")
 
-    def _write_manifest(self, checksum: str | None) -> Path:
+    def _write_manifest(self, checksum: str | None, target: str = "macos-x86_64") -> Path:
         manifest: dict[str, object] = {
             "version": "9.9.9",
             "assets": {
-                "linux-x86_64": "https://example.invalid/herdr-linux-x86_64"
+                target: f"https://example.invalid/herdr-{target}"
             },
         }
         if checksum is not None:
-            manifest["sha256"] = {"linux-x86_64": checksum}
+            manifest["sha256"] = {target: checksum}
         path = self.root / "latest.json"
         path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         return path
@@ -145,6 +148,20 @@ exec {sha256sum} "$@"
             check=False,
         )
 
+    def test_linux_installs_fork_dev_build_without_checksum(self) -> None:
+        # On Linux the installer pulls this fork's own build from the rolling
+        # `dev` GitHub release and skips the manifest/checksum flow, so a run
+        # with no sha256 published still succeeds and installs the binary.
+        self._write_uname("Linux")
+        result = self._run_installer(None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (self.install_dir / "herdr").read_bytes(), self.payload.read_bytes()
+        )
+
+    # The checksum tests below exercise the macOS manifest path (uname defaults
+    # to Darwin in setUp); checksum verification is macOS-only after the Linux
+    # path switched to the fork's unmanifested dev release.
     def test_valid_download_uses_each_supported_checksum_tool(self) -> None:
         for tool in ("sha256sum", "shasum", "openssl"):
             with self.subTest(tool=tool):
@@ -158,6 +175,7 @@ exec {sha256sum} "$@"
                 self.assertEqual((self.install_dir / "herdr").read_bytes(), self.payload.read_bytes())
 
     def test_android_is_rejected_before_replacing_existing_binary(self) -> None:
+        self._write_uname("Linux")
         self.install_dir.mkdir()
         installed = self.install_dir / "herdr"
         installed.write_bytes(b"existing-herdr\n")
@@ -173,6 +191,7 @@ exec {sha256sum} "$@"
         self.assertEqual(installed.read_bytes(), b"existing-herdr\n")
 
     def test_missing_uname_operating_system_flag_keeps_linux_supported(self) -> None:
+        self._write_uname("Linux")
         result = self._run_installer(
             self.expected_sha256,
             extra_env={"FAKE_UNAME_OS_UNAVAILABLE": "1"},
