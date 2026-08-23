@@ -125,6 +125,14 @@ impl StatusIndicatorStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TabTitleMode {
+    #[default]
+    Numbers,
+    TerminalTitle,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HostCursorModeConfig {
@@ -946,6 +954,10 @@ pub struct UiConfig {
     pub show_agent_labels_on_pane_borders: bool,
     /// Hide the tab row when the workspace has one tab. Default: false.
     pub hide_tab_bar_when_single_tab: bool,
+    /// Labels for tabs that were not renamed. "numbers" keeps 1, 2, 3;
+    /// "terminal_title" inherits the tab's focused pane terminal title, like
+    /// tmux automatic-rename. Default: "numbers".
+    pub tab_titles: TabTitleMode,
     /// Desktop tab row placement. Default: top.
     pub tab_bar_position: TabBarPositionConfig,
     /// Ordered entries shown at the right edge of the desktop tab row. Empty by default.
@@ -1258,6 +1270,7 @@ impl Default for UiConfig {
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
+            tab_titles: TabTitleMode::Numbers,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
@@ -1553,6 +1566,20 @@ status_indicators = "symbols"
             .unwrap_err()
             .to_string();
         assert!(wrong_type.contains("\"auto\", \"always\", \"off\", or a legacy boolean"));
+    }
+
+    #[test]
+    fn tab_titles_defaults_to_numbers_and_parses_terminal_title() {
+        assert_eq!(Config::default().ui.tab_titles, TabTitleMode::Numbers);
+
+        let config: Config = toml::from_str(
+            r#"
+[ui]
+tab_titles = "terminal_title"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.ui.tab_titles, TabTitleMode::TerminalTitle);
     }
 
     #[test]

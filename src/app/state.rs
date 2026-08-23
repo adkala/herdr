@@ -825,6 +825,8 @@ pub struct AppState {
     /// Virtual terminal size (columns, rows) used when no client is attached.
     pub(crate) headless_size: (u16, u16),
     pub agent_panel_sort: AgentPanelSort,
+    /// Labels for auto-named tabs: numbers, or the focused pane terminal title.
+    pub tab_titles: crate::config::TabTitleMode,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
@@ -896,7 +898,56 @@ pub struct AppState {
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
 }
 
+/// Widest auto-inherited tab title, in terminal columns. Custom names are
+/// user-chosen and stay untruncated; inherited pane titles are unbounded
+/// program output, and one long title would otherwise scroll every other tab
+/// out of the strip.
+const MAX_AUTO_TAB_TITLE_WIDTH: usize = 32;
+
+fn truncated_tab_title(title: &str) -> String {
+    use unicode_width::UnicodeWidthChar;
+    if unicode_width::UnicodeWidthStr::width(title) <= MAX_AUTO_TAB_TITLE_WIDTH {
+        return title.to_string();
+    }
+    let mut width = 0;
+    let mut out = String::new();
+    for ch in title.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if width + ch_width > MAX_AUTO_TAB_TITLE_WIDTH - 1 {
+            break;
+        }
+        width += ch_width;
+        out.push(ch);
+    }
+    out.push('…');
+    out
+}
+
 impl AppState {
+    /// Display label for one tab: the custom name when the tab was renamed,
+    /// otherwise the focused pane's terminal title under
+    /// `ui.tab_titles = "terminal_title"`, otherwise the tab number.
+    pub(crate) fn tab_label(
+        &self,
+        ws: &crate::workspace::Workspace,
+        tab_idx: usize,
+    ) -> Option<String> {
+        let tab = ws.tabs.get(tab_idx)?;
+        if let Some(name) = &tab.custom_name {
+            return Some(name.clone());
+        }
+        if self.tab_titles == crate::config::TabTitleMode::TerminalTitle {
+            if let Some(title) = tab
+                .terminal_id(tab.layout.focused())
+                .and_then(|terminal_id| self.terminals.get(terminal_id))
+                .and_then(|terminal| terminal.terminal_title_stripped())
+            {
+                return Some(truncated_tab_title(&title));
+            }
+        }
+        Some((tab_idx + 1).to_string())
+    }
+
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
     }
@@ -1070,6 +1121,7 @@ impl AppState {
                 crate::config::DEFAULT_HEADLESS_ROWS,
             ),
             agent_panel_sort: AgentPanelSort::Spaces,
+            tab_titles: crate::config::TabTitleMode::Numbers,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
@@ -1329,6 +1381,90 @@ impl AppState {
 mod tests {
     use super::*;
     use crossterm::event::KeyEvent;
+
+    fn state_with_pane_title(title: Option<&str>) -> AppState {
+        let mut state = AppState::test_new();
+        state.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+        state.active = Some(0);
+        state.ensure_test_terminals();
+        if let Some(title) = title {
+            let tab = &state.workspaces[0].tabs[0];
+            let terminal_id = tab.terminal_id(tab.layout.focused()).unwrap().clone();
+            state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .set_terminal_title(Some(title.to_string()));
+        }
+        state
+    }
+
+    #[test]
+    fn tab_label_keeps_numbers_by_default() {
+        let state = state_with_pane_title(Some("nvim init.lua"));
+
+        assert_eq!(
+            state.tab_label(&state.workspaces[0], 0).as_deref(),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn tab_label_inherits_focused_pane_terminal_title() {
+        let mut state = state_with_pane_title(Some("⠋ nvim init.lua"));
+        state.tab_titles = crate::config::TabTitleMode::TerminalTitle;
+
+        // The spinner frame is stripped, like every other title surface.
+        assert_eq!(
+            state.tab_label(&state.workspaces[0], 0).as_deref(),
+            Some("nvim init.lua")
+        );
+    }
+
+    #[test]
+    fn tab_label_falls_back_to_the_number_without_a_title() {
+        let mut state = state_with_pane_title(None);
+        state.tab_titles = crate::config::TabTitleMode::TerminalTitle;
+
+        assert_eq!(
+            state.tab_label(&state.workspaces[0], 0).as_deref(),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn tab_label_prefers_the_custom_name_over_the_title() {
+        let mut state = state_with_pane_title(Some("nvim init.lua"));
+        state.tab_titles = crate::config::TabTitleMode::TerminalTitle;
+        state.workspaces[0].tabs[0].set_custom_name("build".into());
+
+        assert_eq!(
+            state.tab_label(&state.workspaces[0], 0).as_deref(),
+            Some("build")
+        );
+    }
+
+    #[test]
+    fn tab_label_truncates_long_titles_by_display_width() {
+        let long = "x".repeat(MAX_AUTO_TAB_TITLE_WIDTH + 8);
+        let mut state = state_with_pane_title(Some(&long));
+        state.tab_titles = crate::config::TabTitleMode::TerminalTitle;
+
+        let label = state.tab_label(&state.workspaces[0], 0).unwrap();
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(label.as_str()),
+            MAX_AUTO_TAB_TITLE_WIDTH
+        );
+        assert!(label.ends_with('…'));
+
+        // A wide CJK glyph that would straddle the cap is dropped, not split.
+        let cjk = "宽".repeat(MAX_AUTO_TAB_TITLE_WIDTH);
+        let mut state = state_with_pane_title(Some(&cjk));
+        state.tab_titles = crate::config::TabTitleMode::TerminalTitle;
+        let label = state.tab_label(&state.workspaces[0], 0).unwrap();
+        assert!(unicode_width::UnicodeWidthStr::width(label.as_str()) <= MAX_AUTO_TAB_TITLE_WIDTH);
+        assert!(label.ends_with('…'));
+    }
 
     #[test]
     fn pane_size_estimate_uses_headless_size_before_first_view() {
