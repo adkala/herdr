@@ -328,7 +328,7 @@ fn render_header_status(
 
     let (state, seen) = ws.aggregate_state(&app.terminals);
     let (dot, dot_style) = state_icon(state, seen, app.status_indicators, p);
-    let tab_label = mobile_tab_status(ws);
+    let tab_label = mobile_tab_status(app, ws);
     let row1 = Rect::new(area.x, area.y, area.width, 1);
     let tab_w = display_width_u16(&tab_label)
         .saturating_add(1)
@@ -368,9 +368,9 @@ fn render_header_status(
     }
 }
 
-fn mobile_tab_status(ws: &crate::workspace::Workspace) -> String {
-    let tab_label = ws
-        .tab_display_name(ws.active_tab)
+fn mobile_tab_status(app: &AppState, ws: &crate::workspace::Workspace) -> String {
+    let tab_label = app
+        .tab_label(ws, ws.active_tab)
         .unwrap_or_else(|| (ws.active_tab + 1).to_string());
     if ws.tabs.len() <= 1 {
         format!("tab {tab_label}")
@@ -642,7 +642,7 @@ fn render_mobile_switcher_content(
         let detail = format!(
             "{detail_prefix}{} · {}",
             ws.branch().unwrap_or_else(|| "shell".into()),
-            mobile_tab_status(ws)
+            mobile_tab_status(app, ws)
         );
         render_two_line_item(
             frame,
@@ -682,8 +682,8 @@ fn render_mobile_switcher_content(
         for (idx, tab) in ws.tabs.iter().enumerate() {
             let active = idx == ws.active_tab;
             let bg = mobile_item_bg(false, active, p);
-            let display_name = ws
-                .tab_display_name(idx)
+            let display_name = app
+                .tab_label(ws, idx)
                 .unwrap_or_else(|| (idx + 1).to_string());
             let label = if tab.is_auto_named() {
                 format!("tab {display_name}")
@@ -1505,8 +1505,9 @@ mod tests {
         workspace.test_add_tab(None);
         assert!(workspace.close_tab(removed_tab));
         workspace.active_tab = 1;
+        let app = crate::app::state::AppState::test_new();
 
-        assert_eq!(mobile_tab_status(&workspace), "tab 2 · 2/2");
+        assert_eq!(mobile_tab_status(&app, &workspace), "tab 2 · 2/2");
     }
 
     #[test]

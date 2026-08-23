@@ -755,6 +755,16 @@
           "description": "Hide the tab row when the workspace has one tab."
         },
         {
+          "key": "ui.tab_titles",
+          "type": "enum",
+          "default": "\"numbers\"",
+          "description": "Labels for tabs that were not renamed: tab numbers, or the focused pane's terminal title like tmux automatic-rename.",
+          "values": [
+            "numbers",
+            "terminal_title"
+          ]
+        },
+        {
           "key": "ui.tab_bar_position",
           "type": "enum",
           "default": "\"top\"",

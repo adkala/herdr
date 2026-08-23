@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Auto-named tabs can now inherit their focused pane's terminal title through `ui.tab_titles = "terminal_title"`, like tmux automatic-rename; the default stays numbered tabs.
+
 ### Fixed
 - Attached clients now render colored underlines (SGR 58), so editor diagnostics such as Neovim's red undercurls keep their color instead of falling back to the text color; the client/server protocol version is now 21.
 - Retained mouse selections now copy when Ctrl+C or Cmd+C arrives before a delayed mouse release instead of forwarding the copy shortcut to the pane. (#3100, thanks @moret)

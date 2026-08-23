@@ -40,7 +40,11 @@ impl App {
     pub(crate) fn window_title_uses_terminal_title(&self) -> bool {
         self.window_title_template
             .as_ref()
-            .is_some_and(|(template, _)| template.uses(WindowTitleToken::TerminalTitle))
+            .is_some_and(|(template, _)| {
+                template.uses(WindowTitleToken::TerminalTitle)
+                    || (template.uses(WindowTitleToken::Tab)
+                        && self.state.tab_titles == crate::config::TabTitleMode::TerminalTitle)
+            })
     }
 
     /// Renders the configured outer window title, or `None` when window titles
@@ -65,7 +69,9 @@ impl App {
                     }
                 }
                 WindowTitlePart::Token(WindowTitleToken::Tab) => {
-                    if let Some(name) = workspace.and_then(|ws| ws.active_tab_display_name()) {
+                    if let Some(name) =
+                        workspace.and_then(|ws| self.state.tab_label(ws, ws.active_tab))
+                    {
                         title.push_str(&name);
                     }
                 }
@@ -123,6 +129,30 @@ mod tests {
 
         app.state.workspaces[0].tabs[0].custom_name = Some("build".into());
         assert_eq!(app.window_title().as_deref(), Some("herd/build"));
+    }
+
+    #[test]
+    fn tab_token_inherits_the_pane_title_when_tab_titles_do() {
+        let mut app = test_app();
+        app.configure_window_title("{tab}");
+        app.state.tab_titles = crate::config::TabTitleMode::TerminalTitle;
+
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_terminal_title(Some("nvim init.lua".into()));
+
+        assert!(app.window_title_uses_terminal_title());
+        assert_eq!(app.window_title().as_deref(), Some("nvim init.lua"));
+
+        app.state.tab_titles = crate::config::TabTitleMode::Numbers;
+        assert!(!app.window_title_uses_terminal_title());
+        assert_eq!(app.window_title().as_deref(), Some("1"));
     }
 
     #[test]

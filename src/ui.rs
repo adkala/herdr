@@ -266,6 +266,7 @@ fn compute_view_internal(
         .and_then(|ws_idx| app.workspaces.get(ws_idx))
         .map(|ws| {
             compute_tab_bar_view(
+                app,
                 ws,
                 tab_bar_content_area(app, tab_bar_rect),
                 app.tab_scroll,
