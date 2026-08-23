@@ -580,6 +580,47 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_tab_labels_inherit_the_focused_pane_title_when_configured() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        let tab = &app.state.workspaces[0].tabs[0];
+        let terminal_id = tab.terminal_id(tab.layout.focused()).unwrap().clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_terminal_title(Some("⠋ nvim init.lua".into()));
+
+        // Numbered tabs ignore the pane title.
+        let numbered = snapshot(&app, "boot", 1, None, None);
+        assert_eq!(numbered.tabs[0].label, "1");
+        assert!(!numbered.tabs[0].custom_label);
+
+        // The client shell's tab strip renders whatever label the server
+        // projects, so the inherited (spinner-stripped) title reaches every
+        // attached client through the snapshot.
+        app.state.tab_titles = crate::config::TabTitleMode::TerminalTitle;
+        let inherited = snapshot(&app, "boot", 2, None, None);
+        assert_eq!(inherited.tabs[0].label, "nvim init.lua");
+        assert!(!inherited.tabs[0].custom_label);
+
+        // A rename still wins over the inherited title.
+        app.state.workspaces[0].tabs[0].set_custom_name("build".into());
+        let renamed = snapshot(&app, "boot", 3, None, None);
+        assert_eq!(renamed.tabs[0].label, "build");
+        assert!(renamed.tabs[0].custom_label);
+    }
+
+    #[test]
     fn snapshot_badges_only_outdated_integrations() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = crate::app::App::new(

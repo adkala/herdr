@@ -308,6 +308,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # New tabs can still be created with the configured keybinding.
 # hide_tab_bar_when_single_tab = false
 
+# Labels for tabs that were not renamed: "numbers" (1, 2, 3) or "terminal_title"
+# to inherit the focused pane's terminal title, like tmux automatic-rename.
+# tab_titles = "numbers"
+
 # Desktop tab row placement: "top" or "bottom".
 # tab_bar_position = "top"
 

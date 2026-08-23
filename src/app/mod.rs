@@ -481,6 +481,7 @@ impl App {
             prefix_mods,
             headless_size: config.headless_size(),
             agent_panel_sort,
+            tab_titles: config.ui.tab_titles,
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
@@ -846,6 +847,7 @@ impl App {
                 self.configure_window_title(&config.ui.window_title);
                 self.state.agent_panel_sort =
                     agent_panel_sort_from_config(config.ui.agent_panel_sort);
+                self.state.tab_titles = config.ui.tab_titles;
                 self.state.sidebar_agents = config.ui.sidebar.agents.clone();
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
                 self.state.sound = config.ui.sound.clone();

@@ -23,10 +23,19 @@ impl App {
             })
     }
 
+    /// Whether tab labels can change with pane terminal titles, so a stripped
+    /// title change must repaint the tab bar.
+    pub(crate) fn terminal_title_tab_bar_changed(&self, changes: &TerminalTitleChanges) -> bool {
+        self.state.tab_titles == crate::config::TabTitleMode::TerminalTitle
+            && changes.stripped_changed
+    }
+
     pub(crate) fn sync_pending_terminal_titles(&mut self) -> TerminalTitleChanges {
         let sources = self.render_dirty.pending_terminal_title_sources();
         let changes = self.sync_terminal_titles(&sources);
-        if self.terminal_title_sidebar_changed(&changes) {
+        if self.terminal_title_sidebar_changed(&changes)
+            || self.terminal_title_tab_bar_changed(&changes)
+        {
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
@@ -195,6 +204,45 @@ mod tests {
         assert!(changes.stripped_changed);
         let render_request = app.render_dirty.take();
         assert!(render_request.generic);
+    }
+
+    #[tokio::test]
+    async fn syncing_pending_titles_redraws_title_inheriting_tab_bars() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            event_hub,
+        );
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        // No sidebar title tokens: only the tab bar can need this render.
+        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+        app.state.tab_titles = crate::config::TabTitleMode::TerminalTitle;
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .unwrap()
+            .clone();
+        let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
+        runtime.test_process_pty_bytes(b"\x1b]0;building\x07");
+        app.terminal_runtimes.insert(terminal_id, runtime);
+        app.render_dirty.request_terminal_title(pane_id);
+
+        let changes = app.sync_pending_terminal_titles();
+
+        assert!(changes.stripped_changed);
+        assert!(app.terminal_title_tab_bar_changed(&changes));
+        let render_request = app.render_dirty.take();
+        assert!(render_request.generic);
+
+        // Numbered tabs ignore title churn.
+        app.state.tab_titles = crate::config::TabTitleMode::Numbers;
+        assert!(!app.terminal_title_tab_bar_changed(&changes));
     }
 
     #[test]
