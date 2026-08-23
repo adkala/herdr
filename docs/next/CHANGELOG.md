@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Auto-named tabs can now inherit their focused pane's terminal title through `ui.tab_titles = "terminal_title"`, like tmux automatic-rename; the default stays numbered tabs.
+
 ## [0.9.4] - 2026-10-13
 
 ### Added
