@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -718,6 +718,9 @@ pub struct CellData {
     pub skip: bool,
     /// Index into `FrameData::hyperlinks` for this cell's OSC 8 target, if any.
     pub hyperlink: Option<u32>,
+    /// Underline color (SGR 58) packed like `fg`; `Reset` (0) means the
+    /// underline takes the foreground color, as SGR 59 would.
+    pub underline_color: u32,
 }
 
 impl CellData {
@@ -729,6 +732,7 @@ impl CellData {
             modifier: modifier_to_u16(cell.modifier),
             skip: cell.skip,
             hyperlink: None,
+            underline_color: color_to_u32(cell.underline_color),
         }
     }
 }
@@ -880,6 +884,7 @@ impl FrameData {
                 cell.fg = u32_to_color(cell_data.fg);
                 cell.bg = u32_to_color(cell_data.bg);
                 cell.modifier = u16_to_modifier(cell_data.modifier);
+                cell.underline_color = u32_to_color(cell_data.underline_color);
                 cell.skip = cell_data.skip;
             }
         }
@@ -2426,6 +2431,7 @@ mod tests {
                     modifier: Modifier::BOLD.bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "i".into(),
@@ -2434,6 +2440,7 @@ mod tests {
                     modifier: Modifier::ITALIC.bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "!".into(),
@@ -2442,6 +2449,7 @@ mod tests {
                     modifier: (Modifier::BOLD | Modifier::UNDERLINED).bits(),
                     skip: false,
                     hyperlink: Some(0),
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: " ".into(),
@@ -2450,6 +2458,7 @@ mod tests {
                     modifier: Modifier::empty().bits(),
                     skip: true,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "→".into(), // multi-byte grapheme
@@ -2458,6 +2467,7 @@ mod tests {
                     modifier: Modifier::REVERSED.bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "🦀".into(), // emoji, wide grapheme cluster
@@ -2466,6 +2476,7 @@ mod tests {
                     modifier: Modifier::empty().bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
             ],
             width: 3,
@@ -2495,7 +2506,7 @@ mod tests {
         assert_eq!(msg, decoded);
         assert_eq!(
             encoded_sha256(&msg),
-            "7c016f7b21ddb5ac79212cf65a968b93eb292b5305b941263e89ffaa40158ee3"
+            "c44401b06520b61a05cb60f1c65dad3ac9ac2e2b742a202f63244561813675d5"
         );
         match decoded {
             ServerMessage::PaneSurface(surface) => {
@@ -2526,6 +2537,7 @@ mod tests {
                     modifier: 3,
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 }],
             }],
             panes: Vec::new(),
@@ -2542,7 +2554,7 @@ mod tests {
         assert_eq!(decoded, msg);
         assert_eq!(
             encoded_sha256(&msg),
-            "0814b99a1dc6eaf7918424aa416c066509cbfb73b72344a809c27cde78cb6dbd"
+            "0a0de4e0d41a2b08bddbec3f4eec28a806ed1febb01245b67c15b62e693dcf67"
         );
     }
 
@@ -2998,6 +3010,7 @@ mod tests {
                 modifier: ((i % 16) as u16),
                 skip: i % 100 == 0,
                 hyperlink: None,
+                underline_color: 0,
             })
             .collect();
 
@@ -3296,6 +3309,7 @@ mod tests {
         buffer.cell_mut((2, 0)).unwrap().set_symbol("!");
         buffer.cell_mut((2, 0)).unwrap().fg = Color::Rgb(255, 128, 0);
         buffer.cell_mut((2, 0)).unwrap().bg = Color::Indexed(220);
+        buffer.cell_mut((2, 0)).unwrap().underline_color = Color::Rgb(255, 0, 0);
 
         let cursor = CursorState {
             x: 1,
@@ -3323,6 +3337,11 @@ mod tests {
         assert_eq!(frame.cells[2].symbol, "!");
         assert_eq!(frame.cells[2].fg, color_to_u32(Color::Rgb(255, 128, 0)));
         assert_eq!(frame.cells[2].bg, color_to_u32(Color::Indexed(220)));
+        assert_eq!(
+            frame.cells[2].underline_color,
+            color_to_u32(Color::Rgb(255, 0, 0))
+        );
+        assert_eq!(frame.cells[0].underline_color, color_to_u32(Color::Reset));
 
         let with_links = FrameData::from_ratatui_buffer_with_hyperlinks(
             &buffer,
@@ -3344,6 +3363,10 @@ mod tests {
         assert_eq!(restored.cell((1, 0)).unwrap().symbol(), "i");
         assert_eq!(restored.cell((2, 0)).unwrap().symbol(), "!");
         assert_eq!(restored.cell((2, 0)).unwrap().fg, Color::Rgb(255, 128, 0));
+        assert_eq!(
+            restored.cell((2, 0)).unwrap().underline_color,
+            Color::Rgb(255, 0, 0)
+        );
     }
 
     #[test]
@@ -3357,6 +3380,7 @@ mod tests {
                     modifier: 0,
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 };
                 5
             ], // 5 cells but 3×2 = 6 expected

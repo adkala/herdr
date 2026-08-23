@@ -21,6 +21,7 @@
 - New lifecycle event subscriptions now start with live events rather than replaying retained history. API clients should subscribe before taking their initial snapshot to avoid missing changes. (#1270)
 
 ### Fixed
+- Attached clients now render colored underlines (SGR 58), so editor diagnostics such as Neovim's red undercurls keep their color instead of falling back to the text color; the client/server protocol version is now 23.
 - Mouse selections now stay visible and copyable while terminal output continues, including with automatic copying disabled. Ctrl+C and Cmd+C copy a selection even before a delayed mouse release, and a failed copy no longer interrupts the agent. Selection highlights also remain visible when host colors are unavailable. (#3100, #2708, #3684, thanks @moret and @Pimpmuckl)
 - Wayland clipboard copies no longer freeze Herdr while `wl-copy` serves the selection. (#3014)
 - Live handoff now preserves mouse forwarding for running pane applications. (#3000, thanks @xkrogen)
