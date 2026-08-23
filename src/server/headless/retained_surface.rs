@@ -624,6 +624,7 @@ mod tests {
             modifier: 0,
             skip: false,
             hyperlink: None,
+            underline_color: 0,
         }
     }
 
