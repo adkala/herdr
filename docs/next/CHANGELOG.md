@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Attached clients now render colored underlines (SGR 58), so editor diagnostics such as Neovim's red undercurls keep their color instead of falling back to the text color; the client/server protocol version is now 21.
 - Retained mouse selections now copy when Ctrl+C or Cmd+C arrives before a delayed mouse release instead of forwarding the copy shortcut to the pane. (#3100, thanks @moret)
 - Removing a background worktree workspace no longer changes focus to its parent workspace. (#3098)
 - Prefix bindings such as `prefix+|` now recognize characters produced by macOS Option and custom keyboard layouts, while exact chords such as `prefix+alt+w` keep priority. (#3079, thanks @vlcinsky)

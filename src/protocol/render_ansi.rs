@@ -355,8 +355,35 @@ fn modifier_to_sgr_parts(val: u16) -> Vec<&'static str> {
     parts
 }
 
+/// Converts a packed u32 color to an underline-color SGR fragment (SGR 58).
+///
+/// Returns `None` for `Reset`: every cell SGR starts with `0`, which already
+/// drops the underline color back to the foreground, so no `59` is needed.
+/// Only the colon form is emitted (`58:5:n`, `58:2::r:g:b`): SGR 58 is not
+/// in ECMA-48, and terminals (and tmux) agree on the colon subparameter
+/// spelling while the semicolon one is parsed inconsistently.
+fn color_to_sgr_underline(val: u32) -> Option<String> {
+    match val >> 24 {
+        0x00 => match val & 0xFF {
+            0x00 => None, // Reset
+            // Named colors have no SGR 58 spelling; map them onto the
+            // matching 16-color palette index.
+            named @ 0x01..=0x10 => Some(format!("58:5:{}", named - 1)),
+            _ => None, // Unknown → Reset
+        },
+        0x01 => Some(format!("58:5:{}", val & 0xFF)), // Indexed
+        0x02 => {
+            let r = (val >> 16) & 0xFF;
+            let g = (val >> 8) & 0xFF;
+            let b = val & 0xFF;
+            Some(format!("58:2::{r}:{g}:{b}"))
+        }
+        _ => None,
+    }
+}
+
 /// Builds a complete SGR escape sequence for a cell's style.
-fn build_sgr(fg: u32, bg: u32, modifier: u16) -> String {
+fn build_sgr(fg: u32, bg: u32, modifier: u16, underline_color: u32) -> String {
     let mut parts = vec!["0".to_owned()];
     parts.extend(
         modifier_to_sgr_parts(modifier)
@@ -365,6 +392,9 @@ fn build_sgr(fg: u32, bg: u32, modifier: u16) -> String {
     );
     parts.push(color_to_sgr_fg(fg));
     parts.push(color_to_sgr_bg(bg));
+    if let Some(underline) = color_to_sgr_underline(underline_color) {
+        parts.push(underline);
+    }
     format!("\x1b[{}m", parts.join(";"))
 }
 
@@ -379,6 +409,7 @@ fn cells_equal(a: &CellData, b: &CellData) -> bool {
         && a.fg == b.fg
         && a.bg == b.bg
         && a.modifier == b.modifier
+        && a.underline_color == b.underline_color
         && a.hyperlink == b.hyperlink
     // Skip flag is only for ratatui internal use, not visual.
 }
@@ -744,7 +775,7 @@ fn write_cell(
         write_cursor_position(writer, position);
     }
 
-    let sgr = build_sgr(cell.fg, cell.bg, cell.modifier);
+    let sgr = build_sgr(cell.fg, cell.bg, cell.modifier, cell.underline_color);
     if sgr != *last_sgr {
         let _ = writer.write_all(sgr.as_bytes());
         *last_sgr = sgr;
@@ -765,6 +796,7 @@ fn cells_visually_equal(
         && cell.fg == prev_cell.fg
         && cell.bg == prev_cell.bg
         && cell.modifier == prev_cell.modifier
+        && cell.underline_color == prev_cell.underline_color
         && sanitized_cell_hyperlink_uri(sanitized_hyperlinks, cell)
             == sanitized_cell_hyperlink_uri(prev_sanitized_hyperlinks, prev_cell)
     // Skip flag is only for ratatui internal use, not visual.
@@ -845,6 +877,7 @@ mod tests {
             modifier,
             skip: false,
             hyperlink: None,
+            underline_color: 0,
         }
     }
 
@@ -921,7 +954,7 @@ mod tests {
 
     #[test]
     fn build_sgr_produces_valid_sequence() {
-        let sgr = build_sgr(0x00_00_00_02, 0x00_00_00_01, 1); // fg=Red, bg=Black, bold
+        let sgr = build_sgr(0x00_00_00_02, 0x00_00_00_01, 1, 0); // fg=Red, bg=Black, bold
         assert!(sgr.starts_with("\x1b["));
         assert!(sgr.ends_with("m"));
         assert!(sgr.contains("0")); // reset existing style first
@@ -932,7 +965,10 @@ mod tests {
 
     #[test]
     fn build_sgr_resets_previous_modifiers_when_cell_is_plain() {
-        assert_eq!(build_sgr(0x00_00_00_00, 0x00_00_00_00, 0), "\x1b[0;39;49m");
+        assert_eq!(
+            build_sgr(0x00_00_00_00, 0x00_00_00_00, 0, 0),
+            "\x1b[0;39;49m"
+        );
     }
 
     #[test]
@@ -942,9 +978,58 @@ mod tests {
         );
 
         assert_eq!(
-            build_sgr(0x00_00_00_00, 0x00_00_00_00, modifier),
+            build_sgr(0x00_00_00_00, 0x00_00_00_00, modifier, 0),
             "\x1b[0;4:3;39;49m"
         );
+    }
+
+    #[test]
+    fn build_sgr_emits_underline_color_in_colon_form() {
+        let curly = crate::protocol::modifier_to_u16(
+            crate::protocol::modifier_with_underline_style(ratatui::style::Modifier::UNDERLINED, 3),
+        );
+        let rgb = crate::protocol::color_to_u32(ratatui::style::Color::Rgb(255, 0, 0));
+        assert_eq!(
+            build_sgr(0x00_00_00_00, 0x00_00_00_00, curly, rgb),
+            "\x1b[0;4:3;39;49;58:2::255:0:0m"
+        );
+
+        let indexed = crate::protocol::color_to_u32(ratatui::style::Color::Indexed(196));
+        assert_eq!(
+            build_sgr(0x00_00_00_00, 0x00_00_00_00, curly, indexed),
+            "\x1b[0;4:3;39;49;58:5:196m"
+        );
+
+        // Named colors have no SGR 58 spelling; they map onto the 16-color palette.
+        let named = crate::protocol::color_to_u32(ratatui::style::Color::LightRed);
+        assert_eq!(
+            build_sgr(0x00_00_00_00, 0x00_00_00_00, curly, named),
+            "\x1b[0;4:3;39;49;58:5:9m"
+        );
+    }
+
+    #[test]
+    fn build_sgr_omits_underline_color_when_reset() {
+        let reset = crate::protocol::color_to_u32(ratatui::style::Color::Reset);
+        assert_eq!(
+            build_sgr(0x00_00_00_00, 0x00_00_00_00, 0, reset),
+            "\x1b[0;39;49m"
+        );
+    }
+
+    #[test]
+    fn changed_cells_repaint_when_only_underline_color_differs() {
+        let mut prev = make_frame(2, 1, vec![make_cell("U", 0, 0, 8), make_cell("V", 0, 0, 8)]);
+        let mut frame = prev.clone();
+        prev.cells[0].underline_color = crate::protocol::color_to_u32(ratatui::style::Color::Reset);
+        frame.cells[0].underline_color =
+            crate::protocol::color_to_u32(ratatui::style::Color::Rgb(255, 0, 0));
+
+        let mut out = Vec::new();
+        blit_frame_to(&mut out, &frame, Some(&prev));
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("58:2::255:0:0"), "output: {out:?}");
+        assert!(out.contains('U'), "output: {out:?}");
     }
 
     #[test]

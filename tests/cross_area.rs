@@ -520,6 +520,7 @@ struct CellWire {
     modifier: u16,
     skip: bool,
     hyperlink: Option<u32>,
+    underline_color: u32,
 }
 
 #[derive(Debug, Deserialize)]
