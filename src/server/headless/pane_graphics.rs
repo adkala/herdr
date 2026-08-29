@@ -499,6 +499,12 @@ impl HeadlessServer {
                 crate::render_prof::event("retained_graphics_fallback.client_state");
                 return RetainedGraphicsOutcome::Fallback;
             }
+            if client.graphics_transport.uses_placeholders() {
+                // Placeholder cells live in the frame, so this text-free
+                // graphics-only path cannot carry them.
+                crate::render_prof::event("retained_graphics_fallback.placeholder_transport");
+                return RetainedGraphicsOutcome::Fallback;
+            }
             let Some(last_frame) = client.render_state.last_frame() else {
                 crate::render_prof::event("retained_graphics_fallback.no_last_frame");
                 return RetainedGraphicsOutcome::Fallback;
@@ -521,6 +527,7 @@ impl HeadlessServer {
                 self.app.state.view.tab_surface(),
                 cell_size,
                 Some(crate::kitty_graphics::HEADLESS_GRAPHICS_TRANSACTION_BUDGET),
+                client.graphics_transport,
                 &mut next_graphics_cache,
             );
             crate::render_prof::duration_since("retained_graphics.graphics_encode", encode_started);

@@ -316,6 +316,7 @@ pub(crate) enum ServerEvent {
         keybindings: Option<Box<crate::config::LiveKeybindConfig>>,
         direct_attach_requested: bool,
         direct_graphics: bool,
+        graphics_transport: crate::kitty_graphics::HostGraphicsTransport,
         writer: ClientWriter,
     },
     /// A client sent an input message.
@@ -563,6 +564,7 @@ pub(crate) fn handle_client_handshake(
         keybindings,
         direct_attach_requested,
         direct_graphics,
+        graphics_transport,
     ) = match hello {
         ClientMessage::Hello {
             version,
@@ -613,6 +615,11 @@ pub(crate) fn handle_client_handshake(
                 keybindings,
                 launch_mode == ClientLaunchMode::TerminalAttach,
                 launch_mode == ClientLaunchMode::AppDirectGraphics,
+                if launch_mode == ClientLaunchMode::AppPassthroughGraphics {
+                    crate::kitty_graphics::HostGraphicsTransport::TmuxPlaceholders
+                } else {
+                    crate::kitty_graphics::HostGraphicsTransport::Direct
+                },
             )
         }
         _ => {
@@ -677,6 +684,7 @@ pub(crate) fn handle_client_handshake(
         keybindings,
         direct_attach_requested,
         direct_graphics,
+        graphics_transport,
         writer,
     };
     if let Err(err) = server_event_tx.blocking_send(connected) {
@@ -1363,9 +1371,14 @@ new_tab = "ctrl+notakey"
                 keybindings,
                 direct_attach_requested,
                 direct_graphics,
+                graphics_transport,
                 writer,
             } => {
                 assert_eq!(client_id, 42);
+                assert_eq!(
+                    graphics_transport,
+                    crate::kitty_graphics::HostGraphicsTransport::Direct
+                );
                 assert_eq!((cols, rows), (100, 30));
                 assert_eq!((cell_width_px, cell_height_px), (8, 16));
                 assert_eq!(render_encoding, RenderEncoding::TerminalAnsi);

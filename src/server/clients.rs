@@ -57,6 +57,8 @@ pub(crate) struct ClientConnection {
     pub(crate) graphics_cache: crate::kitty_graphics::HostGraphicsCache,
     /// Passive eligibility for audited local Kitty regular-file graphics.
     pub(crate) direct_graphics: bool,
+    /// How this client's host terminal accepts Kitty graphics.
+    pub(crate) graphics_transport: crate::kitty_graphics::HostGraphicsTransport,
     /// Whether this frontend preserves exact SGR pixel reports.
     pub(crate) pixel_mouse: bool,
     /// Whether the next graphics frame must clear and rebuild host-side Kitty state.
@@ -129,6 +131,7 @@ impl ClientConnection {
             render_state: ClientRenderState::new(render_encoding),
             graphics_cache: crate::kitty_graphics::HostGraphicsCache::default(),
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             pixel_mouse: false,
             graphics_surface_reset_pending: false,
             render_pending: false,

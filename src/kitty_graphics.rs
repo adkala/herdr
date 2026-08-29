@@ -7,12 +7,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use base64::Engine;
-use ratatui::layout::Rect;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Position, Rect};
+use ratatui::style::{Color, Modifier, Style};
 
 use crate::app::state::AppState;
 use crate::app::Mode;
 use crate::ghostty::{
     KittyImageDescriptor, KittyImageFormat, KittyImagePlacement, KittyPlacementRenderInfo,
+    KittyVirtualOrigin,
 };
 use crate::layout::{PaneId, PaneInfo};
 use crate::terminal::TerminalRuntimeRegistry;
@@ -66,6 +69,149 @@ impl HostCellSize {
         }
         self
     }
+}
+
+/// How an attached client's host terminal accepts Kitty graphics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum HostGraphicsTransport {
+    /// The host terminal parses Kitty APCs itself: images are shown with
+    /// cursor-positioned placements written straight to its stdout.
+    #[default]
+    Direct,
+    /// The host terminal sits behind a tmux pane. tmux only relays Kitty
+    /// commands inside `DCS tmux;` passthrough (the client wraps them), and it
+    /// does not sync the outer cursor for passthrough, so cursor-positioned
+    /// placements would land anywhere. Images are instead transmitted as
+    /// virtual placements (`U=1`) anchored by `U+10EEEE` placeholder cells
+    /// that Herdr draws into the frame like ordinary text; tmux forwards those
+    /// as cells and the host terminal composes the image over them.
+    TmuxPlaceholders,
+}
+
+impl HostGraphicsTransport {
+    /// Transport for a client whose stdout is this process's own terminal.
+    pub(crate) fn from_env() -> Self {
+        if std::env::var_os("TMUX").is_some() {
+            Self::TmuxPlaceholders
+        } else {
+            Self::Direct
+        }
+    }
+
+    pub(crate) fn uses_placeholders(self) -> bool {
+        matches!(self, Self::TmuxPlaceholders)
+    }
+}
+
+const KITTY_UNICODE_PLACEHOLDER_CHAR: char = '\u{10EEEE}';
+
+/// One `U+10EEEE` placeholder cell Herdr draws so the host terminal shows a
+/// virtual placement there. `row`/`col` index the placement grid; the image id
+/// travels in the foreground color (low 24 bits) plus a third diacritic for
+/// the high byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaceholderCell {
+    pub(crate) x: u16,
+    pub(crate) y: u16,
+    pub(crate) image_id: u32,
+    pub(crate) row: u32,
+    pub(crate) col: u32,
+}
+
+impl PlaceholderCell {
+    /// Write this cell's grapheme into `out`; `false` when a grid index or the
+    /// image id high byte exceeds the protocol's diacritic table.
+    fn symbol_into(self, out: &mut String) -> bool {
+        out.clear();
+        let Some(row) = crate::ghostty::kitty_placeholder_diacritic(self.row) else {
+            return false;
+        };
+        let Some(col) = crate::ghostty::kitty_placeholder_diacritic(self.col) else {
+            return false;
+        };
+        out.push(KITTY_UNICODE_PLACEHOLDER_CHAR);
+        out.push(row);
+        out.push(col);
+        let high = self.image_id >> 24;
+        if high > 0 {
+            let Some(high) = crate::ghostty::kitty_placeholder_diacritic(high) else {
+                return false;
+            };
+            out.push(high);
+        }
+        true
+    }
+
+    fn fg(self) -> Color {
+        Color::Rgb(
+            ((self.image_id >> 16) & 0xff) as u8,
+            ((self.image_id >> 8) & 0xff) as u8,
+            (self.image_id & 0xff) as u8,
+        )
+    }
+}
+
+/// Draw placeholder cells over a rendered frame. The pane render already
+/// blanked the pane's own placeholders, so these become the only ones the host
+/// sees. Cells outside the buffer or beyond the diacritic table are skipped.
+pub(crate) fn paint_placeholder_cells(buffer: &mut Buffer, cells: &[PlaceholderCell]) {
+    let mut symbol = String::new();
+    for cell in cells {
+        if !buffer.area.contains(Position::new(cell.x, cell.y)) {
+            continue;
+        }
+        if !cell.symbol_into(&mut symbol) {
+            continue;
+        }
+        let target = &mut buffer[(cell.x, cell.y)];
+        target.set_symbol(&symbol);
+        target.set_style(
+            Style::default()
+                .fg(cell.fg())
+                .underline_color(Color::Reset)
+                .remove_modifier(Modifier::all()),
+        );
+        target.set_skip(false);
+    }
+}
+
+/// Wrap every Kitty APC (`ESC _ G … ESC \`) in `bytes` in a tmux `DCS tmux;`
+/// passthrough with the inner escapes doubled, leaving other bytes untouched.
+pub(crate) fn wrap_kitty_graphics_for_tmux(bytes: &[u8]) -> Vec<u8> {
+    const APC_START: &[u8] = b"\x1b_G";
+    const ST: &[u8] = b"\x1b\\";
+    let mut out = Vec::with_capacity(bytes.len() + 64);
+    let mut index = 0;
+    while index < bytes.len() {
+        let Some(start) = find_subslice(&bytes[index..], APC_START).map(|offset| index + offset)
+        else {
+            out.extend_from_slice(&bytes[index..]);
+            break;
+        };
+        out.extend_from_slice(&bytes[index..start]);
+        let body = start + APC_START.len();
+        let Some(end) = find_subslice(&bytes[body..], ST).map(|offset| body + offset + ST.len())
+        else {
+            out.extend_from_slice(&bytes[start..]);
+            break;
+        };
+        out.extend_from_slice(b"\x1bPtmux;");
+        for &byte in &bytes[start..end] {
+            if byte == 0x1b {
+                out.push(0x1b);
+            }
+            out.push(byte);
+        }
+        out.extend_from_slice(ST);
+        index = end;
+    }
+    out
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +287,8 @@ pub(crate) struct HostGraphicsCache {
     view: Option<HostViewKey>,
     replay_placements: bool,
     replayed_placements: HashSet<(u32, u32)>,
+    /// Transport of the client this cache belongs to; set on every encode.
+    transport: HostGraphicsTransport,
 }
 
 static KITTY_GRAPHICS_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -154,38 +302,20 @@ pub(crate) fn is_enabled() -> bool {
     KITTY_GRAPHICS_ENABLED.load(Ordering::Acquire)
 }
 
-pub(crate) fn paint_local_pane_graphics(
+/// Encode host graphics for the in-process client through its shared cache,
+/// draining incremental transactions until the update is complete.
+pub(crate) fn encode_shared_local_pane_graphics(
     app: &AppState,
     graphics: &crate::app::pane_graphics::Runtime,
     terminal_runtimes: &TerminalRuntimeRegistry,
     cell_size: HostCellSize,
-) -> io::Result<()> {
+    transport: HostGraphicsTransport,
+) -> EncodedGraphics {
     let cache = LOCAL_HOST_GRAPHICS.get_or_init(|| Mutex::new(HostGraphicsCache::default()));
     let Ok(mut cache) = cache.lock() else {
-        return Ok(());
+        return EncodedGraphics::new(Vec::new(), false);
     };
-    if graphics.slots.is_empty() && !cache.has_pane_sources() {
-        let encoded = encode_local_pane_graphics(
-            app,
-            graphics,
-            terminal_runtimes,
-            app.view.tab_surface(),
-            cell_size,
-            None,
-            &mut cache,
-        );
-        drop(cache);
-        if encoded.bytes.is_empty() {
-            return Ok(());
-        }
-        let mut stdout = io::stdout().lock();
-        stdout.write_all(b"\x1b7")?;
-        stdout.write_all(&encoded.bytes)?;
-        stdout.write_all(b"\x1b8")?;
-        return stdout.flush();
-    }
-
-    let mut stdout = io::stdout().lock();
+    let mut bytes = Vec::new();
     loop {
         let encoded = encode_local_pane_graphics(
             app,
@@ -194,23 +324,71 @@ pub(crate) fn paint_local_pane_graphics(
             app.view.tab_surface(),
             cell_size,
             None,
+            transport,
             &mut cache,
         );
-        if !encoded.bytes.is_empty() {
-            stdout.write_all(b"\x1b7")?;
-            stdout.write_all(&encoded.bytes)?;
-            stdout.write_all(b"\x1b8")?;
-        }
+        bytes.extend(encoded.bytes);
         if !encoded.incomplete {
-            break;
+            return EncodedGraphics {
+                bytes,
+                incomplete: false,
+                placeholders: encoded.placeholders,
+            };
         }
     }
+}
+
+/// Write already-encoded host graphics to this process's terminal, wrapping
+/// them for tmux when the transport needs it.
+pub(crate) fn write_local_host_graphics(
+    bytes: &[u8],
+    transport: HostGraphicsTransport,
+) -> io::Result<()> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let wrapped;
+    let bytes = if transport.uses_placeholders() {
+        wrapped = wrap_kitty_graphics_for_tmux(bytes);
+        wrapped.as_slice()
+    } else {
+        bytes
+    };
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(b"\x1b7")?;
+    stdout.write_all(bytes)?;
+    stdout.write_all(b"\x1b8")?;
     stdout.flush()
+}
+
+pub(crate) fn paint_local_pane_graphics(
+    app: &AppState,
+    graphics: &crate::app::pane_graphics::Runtime,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    cell_size: HostCellSize,
+    transport: HostGraphicsTransport,
+) -> io::Result<()> {
+    let encoded =
+        encode_shared_local_pane_graphics(app, graphics, terminal_runtimes, cell_size, transport);
+    write_local_host_graphics(&encoded.bytes, transport)
 }
 
 pub(crate) struct EncodedGraphics {
     pub(crate) bytes: Vec<u8>,
     pub(crate) incomplete: bool,
+    /// Placeholder cells the caller must draw into the frame it is about to
+    /// present; only non-empty for `HostGraphicsTransport::TmuxPlaceholders`.
+    pub(crate) placeholders: Vec<PlaceholderCell>,
+}
+
+impl EncodedGraphics {
+    pub(crate) fn new(bytes: Vec<u8>, incomplete: bool) -> Self {
+        Self {
+            bytes,
+            incomplete,
+            placeholders: Vec::new(),
+        }
+    }
 }
 
 pub(crate) fn encode_local_pane_graphics(
@@ -220,15 +398,14 @@ pub(crate) fn encode_local_pane_graphics(
     surface: crate::ui::TabSurfaceView<'_>,
     cell_size: HostCellSize,
     transaction_budget: Option<usize>,
+    transport: HostGraphicsTransport,
     cache: &mut HostGraphicsCache,
 ) -> EncodedGraphics {
+    cache.transport = transport;
     let visible = app.mode == Mode::Terminal && cell_size.is_known();
     if graphics.slots.is_empty() {
         if !visible {
-            return EncodedGraphics {
-                bytes: cache.clear_bytes(),
-                incomplete: false,
-            };
+            return EncodedGraphics::new(cache.clear_bytes(), false);
         }
         let mut bytes = if transaction_budget.is_none() && cache.has_pane_sources() {
             cache.clear_pane_sources()
@@ -241,6 +418,7 @@ pub(crate) fn encode_local_pane_graphics(
             terminal_runtimes,
             surface,
             cell_size,
+            transport,
             &cache.images,
             &cache.oversized,
         );
@@ -251,6 +429,7 @@ pub(crate) fn encode_local_pane_graphics(
             bytes.extend(encoded.bytes);
             encoded.bytes = bytes;
         }
+        encoded.placeholders = placeholder_cells(transport, &placements);
         return encoded;
     }
 
@@ -270,6 +449,7 @@ pub(crate) fn encode_local_pane_graphics(
             terminal_runtimes,
             surface,
             cell_size,
+            transport,
             &cache.images,
             &cache.oversized,
         )
@@ -280,13 +460,62 @@ pub(crate) fn encode_local_pane_graphics(
     // The host text blit overwrites Kitty placements, so every rendered frame must
     // display cached images again even when their data and geometry are unchanged.
     cache.request_placement_replay();
-    encode_graphics_update_incremental(
+    let mut encoded = encode_graphics_update_incremental(
         cache,
         &placements,
         &live_pane_sources,
         transaction_budget,
         false,
-    )
+    );
+    encoded.placeholders = placeholder_cells(transport, &placements);
+    encoded
+}
+
+/// Placeholder cells for every visible placement under the placeholder
+/// transport: one row of cells per placeholder-origin run (indexed by the
+/// pane's own grid position), or the full clipped rectangle for a
+/// cursor-positioned pane placement or plugin layer.
+fn placeholder_cells(
+    transport: HostGraphicsTransport,
+    placements: &[HostPlacement],
+) -> Vec<PlaceholderCell> {
+    if !transport.uses_placeholders() {
+        return Vec::new();
+    }
+    let mut cells = Vec::new();
+    for placement in placements {
+        let Some((clipped, _)) = clipped_placement(placement) else {
+            continue;
+        };
+        let image_id = host_image_id_of(transport, placement);
+        match placement.placement.virtual_origin {
+            Some(origin) => {
+                for offset in 0..clipped.cols {
+                    cells.push(PlaceholderCell {
+                        x: clipped.x.saturating_add(offset as u16),
+                        y: clipped.y,
+                        image_id,
+                        row: origin.row,
+                        col: origin.col.saturating_add(offset),
+                    });
+                }
+            }
+            None => {
+                for row in 0..clipped.rows {
+                    for col in 0..clipped.cols {
+                        cells.push(PlaceholderCell {
+                            x: clipped.x.saturating_add(col as u16),
+                            y: clipped.y.saturating_add(row as u16),
+                            image_id,
+                            row,
+                            col,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    cells
 }
 
 pub(crate) fn has_visible_pane_graphics(
@@ -380,10 +609,7 @@ fn encode_terminal_graphics_update(
     cache.reset_incremental_state();
     let mut bytes = Vec::new();
     encode_terminal_graphics_update_legacy(&mut bytes, placements, view_changed, cache);
-    EncodedGraphics {
-        bytes,
-        incomplete: false,
-    }
+    EncodedGraphics::new(bytes, false)
 }
 
 fn encode_terminal_graphics_update_legacy(
@@ -401,16 +627,17 @@ fn encode_terminal_graphics_update_legacy(
         .sources
         .retain(|source, _| current_sources.contains(source));
 
+    let transport = cache.transport;
     let mut current_placements = HashSet::new();
     for placement in placements {
         let Some((clipped, format_code)) = clipped_placement(placement) else {
             continue;
         };
-        let host_id = host_image_id(placement.pane_id, &placement.placement);
-        let placement_id = host_placement_id(&placement.source_key, &placement.placement);
+        let host_id = host_image_id(transport, placement.pane_id, &placement.placement);
+        let placement_id =
+            host_placement_id(transport, &placement.source_key, &placement.placement);
         let image_signature = image_signature(placement, format_code);
-        let placement_signature =
-            placement_signature(clipped, placement.placement.z, placement.scrollback_offset);
+        let placement_signature = host_placement_signature(transport, placement, clipped);
         let placement_key = (host_id, placement_id);
         current_placements.insert(placement_key);
 
@@ -452,20 +679,22 @@ fn encode_terminal_graphics_update_legacy(
             Some(existing) => {
                 encode_display_placement(
                     bytes,
+                    transport,
+                    placement,
                     clipped,
                     host_id,
                     placement_id,
-                    placement.placement.z,
                 );
                 *existing = placement_signature;
             }
             None => {
                 encode_display_placement(
                     bytes,
+                    transport,
+                    placement,
                     clipped,
                     host_id,
                     placement_id,
-                    placement.placement.z,
                 );
                 cache.placements.insert(placement_key, placement_signature);
             }
@@ -534,16 +763,14 @@ fn encode_graphics_update_incremental(
         .iter()
         .map(|placement| placement.source_key.clone())
         .collect::<HashSet<_>>();
+    let transport = cache.transport;
     let desired_placements = placements
         .iter()
         .filter_map(|placement| {
             clipped_placement(placement).map(|_| {
-                let host_id = placement
-                    .host_image_id
-                    .unwrap_or_else(|| host_image_id(placement.pane_id, &placement.placement));
                 (
-                    host_id,
-                    host_placement_id(&placement.source_key, &placement.placement),
+                    host_image_id_of(transport, placement),
+                    host_placement_id(transport, &placement.source_key, &placement.placement),
                 )
             })
         })
@@ -552,9 +779,9 @@ fn encode_graphics_update_incremental(
         .continuation
         .as_ref()
         .and_then(|(source, id, _)| {
-            placements
-                .iter()
-                .position(|placement| placement_identity(placement) == (source.clone(), *id))
+            placements.iter().position(|placement| {
+                placement_identity(transport, placement) == (source.clone(), *id)
+            })
         })
         .map(|index| index + 1)
         .or_else(|| cache.continuation.as_ref().map(|cursor| cursor.2))
@@ -579,10 +806,7 @@ fn encode_graphics_update_incremental(
             .iter()
             .any(|(other, id)| *other != source && *id == host_id);
         if emitted && last_reference {
-            return EncodedGraphics {
-                bytes,
-                incomplete: true,
-            };
+            return EncodedGraphics::new(bytes, true);
         }
         cache.sources.remove(&source);
         if last_reference {
@@ -619,10 +843,7 @@ fn encode_graphics_update_incremental(
                 && same_image
                 && coalesced_transaction_fits(bytes.len(), transaction.len(), transaction_budget))
         {
-            return EncodedGraphics {
-                bytes,
-                incomplete: true,
-            };
+            return EncodedGraphics::new(bytes, true);
         }
         bytes.extend(transaction);
         cache.placements.remove(&key);
@@ -646,9 +867,7 @@ fn encode_graphics_update_incremental(
             continue;
         }
         cache.oversized.remove(&placement.source_key);
-        let host_id = placement
-            .host_image_id
-            .unwrap_or_else(|| host_image_id(placement.pane_id, &placement.placement));
+        let host_id = host_image_id_of(transport, placement);
         let image_cached = cache.images.get(&host_id) == Some(&signature);
         // With the image uploaded and the source already bound to it, the
         // transaction is a re-display only: no upload and no superseded-image
@@ -676,13 +895,10 @@ fn encode_graphics_update_incremental(
                 && same_logical_image
                 && coalesced_transaction_fits(bytes.len(), transaction.len(), transaction_budget))
         {
-            return EncodedGraphics {
-                bytes,
-                incomplete: true,
-            };
+            return EncodedGraphics::new(bytes, true);
         }
         *cache = candidate;
-        let (source, id) = placement_identity(placement);
+        let (source, id) = placement_identity(transport, placement);
         cache.continuation = Some((source, id, (index + 1) % placements.len()));
         bytes.extend(transaction);
         emitted = true;
@@ -693,10 +909,7 @@ fn encode_graphics_update_incremental(
 
     cache.replay_placements = false;
     cache.replayed_placements.clear();
-    EncodedGraphics {
-        bytes,
-        incomplete: false,
-    }
+    EncodedGraphics::new(bytes, false)
 }
 
 fn image_transaction_fits(placement: &HostPlacement, budget: Option<usize>) -> bool {
@@ -709,10 +922,13 @@ fn image_transaction_fits(placement: &HostPlacement, budget: Option<usize>) -> b
     encoded.saturating_add(command_overhead) <= budget
 }
 
-fn placement_identity(placement: &HostPlacement) -> (HostSourceKey, u32) {
+fn placement_identity(
+    transport: HostGraphicsTransport,
+    placement: &HostPlacement,
+) -> (HostSourceKey, u32) {
     (
         placement.source_key.clone(),
-        host_placement_id(&placement.source_key, &placement.placement),
+        host_placement_id(transport, &placement.source_key, &placement.placement),
     )
 }
 
@@ -728,14 +944,12 @@ fn encode_placement_update(
     placement: &HostPlacement,
 ) -> Option<Vec<u8>> {
     let (clipped, format_code) = clipped_placement(placement)?;
-    let host_id = placement
-        .host_image_id
-        .unwrap_or_else(|| host_image_id(placement.pane_id, &placement.placement));
-    let placement_id = host_placement_id(&placement.source_key, &placement.placement);
+    let transport = cache.transport;
+    let host_id = host_image_id_of(transport, placement);
+    let placement_id = host_placement_id(transport, &placement.source_key, &placement.placement);
     let key = (host_id, placement_id);
     let image_signature = image_signature(placement, format_code);
-    let placement_signature =
-        placement_signature(clipped, placement.placement.z, placement.scrollback_offset);
+    let placement_signature = host_placement_signature(transport, placement, clipped);
     let image_current = cache.images.get(&host_id) == Some(&image_signature);
     let placement_current = cache.placements.get(&key) == Some(&placement_signature)
         && (!cache.replay_placements || cache.replayed_placements.contains(&key));
@@ -754,6 +968,7 @@ fn encode_placement_update(
         {
             if !encode_transmit_and_display(
                 &mut bytes,
+                transport,
                 placement,
                 clipped,
                 format_code,
@@ -780,10 +995,11 @@ fn encode_placement_update(
     if !displayed && !placement_current {
         encode_display_placement(
             &mut bytes,
+            transport,
+            placement,
             clipped,
             host_id,
             placement_id,
-            placement.placement.z,
         );
     }
     cache.placements.insert(key, placement_signature);
@@ -876,6 +1092,11 @@ pub(crate) fn clear_all_host_graphics() -> io::Result<()> {
     if bytes.is_empty() {
         return Ok(());
     }
+    let bytes = if HostGraphicsTransport::from_env().uses_placeholders() {
+        wrap_kitty_graphics_for_tmux(&bytes)
+    } else {
+        bytes
+    };
     let mut stdout = io::stdout().lock();
     stdout.write_all(&bytes)?;
     stdout.flush()
@@ -1033,10 +1254,7 @@ impl HostGraphicsCache {
             self.replay_placements = false;
             self.replayed_placements.clear();
         }
-        EncodedGraphics {
-            bytes,
-            incomplete: !self.is_empty(),
-        }
+        EncodedGraphics::new(bytes, !self.is_empty())
     }
 
     fn update_view(&mut self, view_key: Option<HostViewKey>) -> bool {
@@ -1064,6 +1282,7 @@ fn collect_visible_placements(
     terminal_runtimes: &TerminalRuntimeRegistry,
     surface: crate::ui::TabSurfaceView<'_>,
     cell_size: HostCellSize,
+    transport: HostGraphicsTransport,
     uploaded_images: &HashMap<u32, ImageSignature>,
     oversized_images: &HashMap<HostSourceKey, ImageSignature>,
 ) -> Vec<HostPlacement> {
@@ -1128,6 +1347,7 @@ fn collect_visible_placements(
         let mut requested_images = HashSet::new();
         for placement in runtime.kitty_image_placements_with_data_filter(|descriptor| {
             terminal_image_needs_data(
+                transport,
                 info.id,
                 descriptor,
                 uploaded_images,
@@ -1161,6 +1381,7 @@ fn collect_visible_placements(
 }
 
 fn terminal_image_needs_data(
+    transport: HostGraphicsTransport,
     pane_id: PaneId,
     descriptor: KittyImageDescriptor,
     uploaded_images: &HashMap<u32, ImageSignature>,
@@ -1169,7 +1390,15 @@ fn terminal_image_needs_data(
 ) -> bool {
     let format_code = kitty_format_code(descriptor.format);
     let signature = image_signature_from_descriptor(descriptor, format_code);
-    let host_id = host_image_id_for_signature(pane_id, signature);
+    let host_id = host_image_id_for_signature(
+        pane_id,
+        signature,
+        host_image_salt(
+            transport,
+            descriptor.placement_id,
+            descriptor.virtual_origin,
+        ),
+    );
     let source = HostSourceKey::Terminal {
         pane_id,
         image_id: descriptor.image_id,
@@ -1241,6 +1470,7 @@ fn pane_graphics_host_placement(
                 source_width: 0,
                 source_height: 0,
             },
+            virtual_origin: None,
         },
     }
 }
@@ -1254,7 +1484,28 @@ fn pane_graphics_kitty_format(format: crate::api::schema::PaneGraphicsFormat) ->
     }
 }
 
-fn host_image_id(pane_id: PaneId, placement: &KittyImagePlacement) -> u32 {
+/// Extra host-image identity under the placeholder transport. Placeholder
+/// cells name only an image (no placement id), so each pane placement of an
+/// image gets its own host image there; all row runs of one pane virtual
+/// placement keep sharing one. Zero keeps the direct transport's ids intact.
+fn host_image_salt(
+    transport: HostGraphicsTransport,
+    placement_id: u32,
+    virtual_origin: Option<KittyVirtualOrigin>,
+) -> u32 {
+    match transport {
+        HostGraphicsTransport::Direct => 0,
+        HostGraphicsTransport::TmuxPlaceholders => {
+            virtual_origin.map_or(placement_id, |origin| origin.placement_id)
+        }
+    }
+}
+
+fn host_image_id(
+    transport: HostGraphicsTransport,
+    pane_id: PaneId,
+    placement: &KittyImagePlacement,
+) -> u32 {
     let format_code = kitty_format_code(placement.format);
     host_image_id_for_signature(
         pane_id,
@@ -1265,17 +1516,31 @@ fn host_image_id(pane_id: PaneId, placement: &KittyImagePlacement) -> u32 {
             data_len: placement.data_len,
             data_fingerprint: placement.data_fingerprint,
         },
+        host_image_salt(transport, placement.placement_id, placement.virtual_origin),
     )
 }
 
-fn host_image_id_for_signature(pane_id: PaneId, signature: ImageSignature) -> u32 {
+fn host_image_id_of(transport: HostGraphicsTransport, placement: &HostPlacement) -> u32 {
+    placement
+        .host_image_id
+        .unwrap_or_else(|| host_image_id(transport, placement.pane_id, &placement.placement))
+}
+
+fn host_image_id_for_signature(pane_id: PaneId, signature: ImageSignature, salt: u32) -> u32 {
     let mut hasher = DefaultHasher::new();
     pane_id.raw().hash(&mut hasher);
     signature.hash(&mut hasher);
+    if salt != 0 {
+        salt.hash(&mut hasher);
+    }
     HOST_IMAGE_ID_BASE + ((hasher.finish() as u32) % 900_000)
 }
 
-fn host_placement_id(source_key: &HostSourceKey, placement: &KittyImagePlacement) -> u32 {
+fn host_placement_id(
+    transport: HostGraphicsTransport,
+    source_key: &HostSourceKey,
+    placement: &KittyImagePlacement,
+) -> u32 {
     let mut hasher = DefaultHasher::new();
     match source_key {
         HostSourceKey::Terminal { pane_id, .. } => pane_id.raw().hash(&mut hasher),
@@ -1286,7 +1551,14 @@ fn host_placement_id(source_key: &HostSourceKey, placement: &KittyImagePlacement
         }
     }
     placement.image_id.hash(&mut hasher);
-    placement.placement_id.hash(&mut hasher);
+    // Under the placeholder transport every row run of a pane virtual
+    // placement maps onto one host placement, so hash the pane placement id
+    // rather than the run's synthetic one.
+    let placement_id = match (transport, placement.virtual_origin) {
+        (HostGraphicsTransport::TmuxPlaceholders, Some(origin)) => origin.placement_id,
+        _ => placement.placement_id,
+    };
+    placement_id.hash(&mut hasher);
     1 + ((hasher.finish() as u32) % 900_000)
 }
 
@@ -1354,7 +1626,11 @@ fn direct_file_command(
     host_image_id: u32,
 ) -> Option<(DirectFileCommand, ClippedPlacement, u32, u32)> {
     let (clipped, format_code) = clipped_placement(placement)?;
-    let placement_id = host_placement_id(&placement.source_key, &placement.placement);
+    let placement_id = host_placement_id(
+        HostGraphicsTransport::Direct,
+        &placement.source_key,
+        &placement.placement,
+    );
     let mut control = format!(
         "a=T,f={format_code},s={},v={},i={host_image_id},p={placement_id},c={},r={},z={},C=1,q=0",
         placement.placement.image_width,
@@ -1420,6 +1696,7 @@ fn encode_upload_image(
 
 fn encode_transmit_and_display(
     out: &mut Vec<u8>,
+    transport: HostGraphicsTransport,
     placement: &HostPlacement,
     clipped: ClippedPlacement,
     format_code: u32,
@@ -1429,34 +1706,152 @@ fn encode_transmit_and_display(
     if placement.placement.data.is_empty() {
         return false;
     }
-    let _ = write!(out, "\x1b[{};{}H", clipped.y + 1, clipped.x + 1);
-    let mut control = format!(
-        "a=T,t=d,f={format_code},s={},v={},i={host_id},p={host_placement_id},c={},r={},z={},C=1,q=2",
-        placement.placement.image_width,
-        placement.placement.image_height,
-        clipped.cols,
-        clipped.rows,
-        placement.placement.z,
-    );
-    append_placement_controls(&mut control, clipped);
+    let control = match transport {
+        HostGraphicsTransport::Direct => {
+            let _ = write!(out, "\x1b[{};{}H", clipped.y + 1, clipped.x + 1);
+            let mut control = format!(
+                "a=T,t=d,f={format_code},s={},v={},i={host_id},p={host_placement_id},c={},r={},z={},C=1,q=2",
+                placement.placement.image_width,
+                placement.placement.image_height,
+                clipped.cols,
+                clipped.rows,
+                placement.placement.z,
+            );
+            append_placement_controls(&mut control, clipped);
+            control
+        }
+        HostGraphicsTransport::TmuxPlaceholders => {
+            let virtual_placement = virtual_host_placement(placement, clipped);
+            let mut control = format!(
+                "a=T,t=d,U=1,f={format_code},s={},v={},i={host_id},p={host_placement_id},c={},r={},z={},q=2",
+                placement.placement.image_width,
+                placement.placement.image_height,
+                virtual_placement.cols,
+                virtual_placement.rows,
+                placement.placement.z,
+            );
+            append_virtual_source_controls(&mut control, virtual_placement);
+            control
+        }
+    };
     encode_kitty_data(out, &control, &placement.placement.data);
     true
 }
 
 fn encode_display_placement(
     out: &mut Vec<u8>,
+    transport: HostGraphicsTransport,
+    placement: &HostPlacement,
     clipped: ClippedPlacement,
     host_id: u32,
     host_placement_id: u32,
-    z: i32,
 ) {
-    let _ = write!(out, "\x1b[{};{}H", clipped.y + 1, clipped.x + 1);
-    let mut control = format!(
-        "a=p,i={host_id},p={host_placement_id},c={},r={},z={z},C=1,q=2",
-        clipped.cols, clipped.rows,
-    );
-    append_placement_controls(&mut control, clipped);
-    let _ = write!(out, "\x1b_G{control};\x1b\\");
+    let z = placement.placement.z;
+    match transport {
+        HostGraphicsTransport::Direct => {
+            let _ = write!(out, "\x1b[{};{}H", clipped.y + 1, clipped.x + 1);
+            let mut control = format!(
+                "a=p,i={host_id},p={host_placement_id},c={},r={},z={z},C=1,q=2",
+                clipped.cols, clipped.rows,
+            );
+            append_placement_controls(&mut control, clipped);
+            let _ = write!(out, "\x1b_G{control};\x1b\\");
+        }
+        HostGraphicsTransport::TmuxPlaceholders => {
+            let virtual_placement = virtual_host_placement(placement, clipped);
+            let mut control = format!(
+                "a=p,U=1,i={host_id},p={host_placement_id},c={},r={},z={z},q=2",
+                virtual_placement.cols, virtual_placement.rows,
+            );
+            append_virtual_source_controls(&mut control, virtual_placement);
+            let _ = write!(out, "\x1b_G{control};\x1b\\");
+        }
+    }
+}
+
+/// Grid and source rectangle of the host-side virtual placement that stands
+/// in for a pane placement under the placeholder transport. A placeholder-
+/// origin run maps onto the pane's whole virtual grid (its cells carry the
+/// grid position); anything else maps its visible rectangle onto a grid of
+/// the same size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VirtualHostPlacement {
+    cols: u32,
+    rows: u32,
+    source_x: u32,
+    source_y: u32,
+    source_width: u32,
+    source_height: u32,
+}
+
+fn virtual_host_placement(
+    placement: &HostPlacement,
+    clipped: ClippedPlacement,
+) -> VirtualHostPlacement {
+    match placement.placement.virtual_origin {
+        Some(origin) => VirtualHostPlacement {
+            cols: origin.grid_cols.max(1),
+            rows: origin.grid_rows.max(1),
+            source_x: 0,
+            source_y: 0,
+            source_width: 0,
+            source_height: 0,
+        },
+        None => VirtualHostPlacement {
+            cols: clipped.cols,
+            rows: clipped.rows,
+            source_x: clipped.source_x,
+            source_y: clipped.source_y,
+            source_width: clipped.source_width,
+            source_height: clipped.source_height,
+        },
+    }
+}
+
+fn append_virtual_source_controls(control: &mut String, placement: VirtualHostPlacement) {
+    if placement.source_x > 0 {
+        let _ = write!(control, ",x={}", placement.source_x);
+    }
+    if placement.source_y > 0 {
+        let _ = write!(control, ",y={}", placement.source_y);
+    }
+    if placement.source_width > 0 {
+        let _ = write!(control, ",w={}", placement.source_width);
+    }
+    if placement.source_height > 0 {
+        let _ = write!(control, ",h={}", placement.source_height);
+    }
+}
+
+/// Change-detection signature for a host placement. Virtual placements are
+/// anchored by their cells, so position and scroll offset do not count there.
+fn host_placement_signature(
+    transport: HostGraphicsTransport,
+    placement: &HostPlacement,
+    clipped: ClippedPlacement,
+) -> PlacementSignature {
+    match transport {
+        HostGraphicsTransport::Direct => {
+            placement_signature(clipped, placement.placement.z, placement.scrollback_offset)
+        }
+        HostGraphicsTransport::TmuxPlaceholders => {
+            let virtual_placement = virtual_host_placement(placement, clipped);
+            PlacementSignature {
+                x: 0,
+                y: 0,
+                cols: virtual_placement.cols,
+                rows: virtual_placement.rows,
+                source_x: virtual_placement.source_x,
+                source_y: virtual_placement.source_y,
+                source_width: virtual_placement.source_width,
+                source_height: virtual_placement.source_height,
+                x_offset: 0,
+                y_offset: 0,
+                z: placement.placement.z,
+                scrollback_offset: 0,
+            }
+        }
+    }
 }
 
 fn append_placement_controls(control: &mut String, clipped: ClippedPlacement) {
@@ -1760,6 +2155,7 @@ mod tests {
                     source_width: 0,
                     source_height: 0,
                 },
+                virtual_origin: None,
             },
         }
     }
@@ -1842,11 +2238,16 @@ mod tests {
         let expected = 1 + ((legacy.finish() as u32) % 900_000);
 
         assert_eq!(
-            host_placement_id(&placement.source_key, &placement.placement),
+            host_placement_id(
+                HostGraphicsTransport::Direct,
+                &placement.source_key,
+                &placement.placement
+            ),
             expected
         );
         assert_ne!(
             host_placement_id(
+                HostGraphicsTransport::Direct,
                 &HostSourceKey::PaneLayer {
                     pane_id: placement.pane_id,
                     layer_id: "primary".into(),
@@ -1890,7 +2291,7 @@ mod tests {
     fn pane_graphics_image_ids_are_disjoint_from_terminal_image_ids() {
         let placement = test_placement(0, 0);
         let signature = image_signature(&placement, kitty_format_code(placement.placement.format));
-        let terminal_id = host_image_id_for_signature(placement.pane_id, signature);
+        let terminal_id = host_image_id_for_signature(placement.pane_id, signature, 0);
         let mut graphics = crate::app::pane_graphics::Runtime::default();
         let primary = (placement.pane_id, "primary".into());
         let pane_graphics_id = graphics.reserve_image_id(&primary).unwrap();
@@ -3116,6 +3517,7 @@ mod tests {
                 height_px: 20,
             },
             Some(HEADLESS_GRAPHICS_TRANSACTION_BUDGET),
+            HostGraphicsTransport::Direct,
             &mut cache,
         );
 
@@ -3134,9 +3536,11 @@ mod tests {
             format: KittyImageFormat::Rgba,
             data_len: 3456 * 2234 * 4,
             data_fingerprint: 42,
+            virtual_origin: None,
         };
         let mut requested = HashSet::new();
         assert!(terminal_image_needs_data(
+            HostGraphicsTransport::Direct,
             pane_id,
             descriptor,
             &HashMap::new(),
@@ -3146,6 +3550,7 @@ mod tests {
         let mut second_placement = descriptor;
         second_placement.placement_id = 2;
         assert!(!terminal_image_needs_data(
+            HostGraphicsTransport::Direct,
             pane_id,
             second_placement,
             &HashMap::new(),
@@ -3161,6 +3566,7 @@ mod tests {
         let oversized = HashMap::from([(source, signature)]);
         let mut requested = HashSet::new();
         assert!(!terminal_image_needs_data(
+            HostGraphicsTransport::Direct,
             pane_id,
             descriptor,
             &HashMap::new(),
@@ -3170,6 +3576,7 @@ mod tests {
         let mut changed = descriptor;
         changed.data_fingerprint += 1;
         assert!(terminal_image_needs_data(
+            HostGraphicsTransport::Direct,
             pane_id,
             changed,
             &HashMap::new(),
@@ -3230,7 +3637,11 @@ mod tests {
         placement.placement.data = vec![1_u8; crate::api::schema::PANE_GRAPHICS_STREAM_MAX_BYTES];
         placement.placement.data_len = placement.placement.data.len();
         let (clipped, format_code) = clipped_placement(&placement).expect("visible placement");
-        let host_id = host_image_id(placement.pane_id, &placement.placement);
+        let host_id = host_image_id(
+            HostGraphicsTransport::Direct,
+            placement.pane_id,
+            &placement.placement,
+        );
         let mut encoded = Vec::new();
 
         assert!(encode_upload_image(
@@ -3239,7 +3650,14 @@ mod tests {
             format_code,
             host_id,
         ));
-        encode_display_placement(&mut encoded, clipped, host_id, 1, 0);
+        encode_display_placement(
+            &mut encoded,
+            HostGraphicsTransport::Direct,
+            &placement,
+            clipped,
+            host_id,
+            1,
+        );
 
         let mut framed = Vec::new();
         crate::protocol::write_message(
@@ -3248,5 +3666,203 @@ mod tests {
         )
         .unwrap();
         assert!(framed.len() <= crate::protocol::MAX_GRAPHICS_FRAME_SIZE + 4);
+    }
+
+    fn placeholder_cache() -> HostGraphicsCache {
+        HostGraphicsCache {
+            transport: HostGraphicsTransport::TmuxPlaceholders,
+            ..HostGraphicsCache::default()
+        }
+    }
+
+    /// One row run of a 3x3 unicode-placeholder image, the way libghostty
+    /// reports the pane's placeholder cells.
+    fn virtual_run(row: u32, viewport_row: i32, synthetic_placement_id: u32) -> HostPlacement {
+        let mut placement = test_placement(0, viewport_row);
+        placement.placement.placement_id = synthetic_placement_id;
+        placement.placement.render.grid_rows = 1;
+        placement.placement.render.source_y = row * 10;
+        placement.placement.render.source_height = 10;
+        placement.placement.virtual_origin = Some(KittyVirtualOrigin {
+            placement_id: 0,
+            grid_cols: 3,
+            grid_rows: 3,
+            row,
+            col: 0,
+        });
+        placement
+    }
+
+    #[test]
+    fn placeholder_transport_uses_virtual_placements_without_cursor_moves() {
+        let mut cache = placeholder_cache();
+        let placement = test_placement(0, 0);
+        let host_id = host_image_id(
+            HostGraphicsTransport::TmuxPlaceholders,
+            placement.pane_id,
+            &placement.placement,
+        );
+        let mut bytes = Vec::new();
+        encode_terminal_graphics_update_legacy(&mut bytes, &[placement], false, &mut cache);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains(&format!(
+                "\x1b_Ga=t,t=d,f=32,s=30,v=30,i={host_id},q=2,m=1;"
+            )),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&format!("\x1b_Ga=p,U=1,i={host_id},p=")),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(",c=3,r=3,z=0,q=2,w=30,h=30;\x1b\\"),
+            "{text:?}"
+        );
+        assert!(
+            !text.contains("\x1b["),
+            "virtual placements must not move the cursor: {text:?}"
+        );
+        assert!(!text.contains("C=1"), "{text:?}");
+    }
+
+    #[test]
+    fn placeholder_cells_cover_the_clipped_grid_with_row_and_column_diacritics() {
+        let placement = test_placement(-1, 2);
+        let host_id = host_image_id(
+            HostGraphicsTransport::TmuxPlaceholders,
+            placement.pane_id,
+            &placement.placement,
+        );
+        let cells = placeholder_cells(HostGraphicsTransport::TmuxPlaceholders, &[placement]);
+        assert_eq!(cells.len(), 6, "{cells:?}");
+        assert_eq!(
+            cells[0],
+            PlaceholderCell {
+                x: 0,
+                y: 2,
+                image_id: host_id,
+                row: 0,
+                col: 0
+            }
+        );
+        assert_eq!(
+            cells[5],
+            PlaceholderCell {
+                x: 1,
+                y: 4,
+                image_id: host_id,
+                row: 2,
+                col: 1
+            }
+        );
+        assert!(
+            placeholder_cells(HostGraphicsTransport::Direct, &[test_placement(-1, 2)]).is_empty()
+        );
+    }
+
+    #[test]
+    fn placeholder_runs_of_one_virtual_image_share_one_host_placement() {
+        let mut cache = placeholder_cache();
+        let runs = [
+            virtual_run(0, 0, 11),
+            virtual_run(1, 1, 12),
+            virtual_run(2, 2, 13),
+        ];
+        let mut bytes = Vec::new();
+        encode_terminal_graphics_update_legacy(&mut bytes, &runs, false, &mut cache);
+        let text = String::from_utf8_lossy(&bytes);
+        assert_eq!(text.matches("a=t,t=d").count(), 1, "{text:?}");
+        assert_eq!(text.matches("\x1b_Ga=p,U=1,").count(), 1, "{text:?}");
+        assert!(text.contains(",c=3,r=3,z=0,q=2;\x1b\\"), "{text:?}");
+        assert_eq!(cache.placements.len(), 1);
+
+        let cells = placeholder_cells(HostGraphicsTransport::TmuxPlaceholders, &runs);
+        assert_eq!(cells.len(), 9);
+        assert!(cells.iter().all(|cell| cell.image_id == cells[0].image_id));
+        assert_eq!(
+            (cells[4].x, cells[4].y, cells[4].row, cells[4].col),
+            (1, 1, 1, 1)
+        );
+
+        let mut again = Vec::new();
+        encode_terminal_graphics_update_legacy(&mut again, &runs, false, &mut cache);
+        assert!(again.is_empty(), "{:?}", String::from_utf8_lossy(&again));
+    }
+
+    #[test]
+    fn placeholder_transport_folds_placement_ids_into_direct_origin_host_images() {
+        let base = test_placement(0, 0);
+        let mut other = test_placement(0, 0);
+        other.placement.placement_id = 9;
+        let direct = HostGraphicsTransport::Direct;
+        let placeholders = HostGraphicsTransport::TmuxPlaceholders;
+        assert_eq!(
+            host_image_id(direct, base.pane_id, &base.placement),
+            host_image_id(direct, other.pane_id, &other.placement)
+        );
+        assert_ne!(
+            host_image_id(placeholders, base.pane_id, &base.placement),
+            host_image_id(placeholders, other.pane_id, &other.placement)
+        );
+        assert_eq!(
+            host_image_id(placeholders, base.pane_id, &virtual_run(0, 0, 11).placement),
+            host_image_id(placeholders, base.pane_id, &virtual_run(1, 1, 12).placement)
+        );
+    }
+
+    #[test]
+    fn wrap_kitty_graphics_for_tmux_wraps_each_command_and_keeps_other_bytes() {
+        let bytes = b"\x1b7\x1b_Ga=d,d=I,i=1,q=2;\x1b\\\x1b_Gm=0;AAAA\x1b\\\x1b8";
+        assert_eq!(
+            wrap_kitty_graphics_for_tmux(bytes),
+            b"\x1b7\x1bPtmux;\x1b\x1b_Ga=d,d=I,i=1,q=2;\x1b\x1b\\\x1b\\\x1bPtmux;\x1b\x1b_Gm=0;AAAA\x1b\x1b\\\x1b\\\x1b8"
+                .to_vec()
+        );
+        assert_eq!(wrap_kitty_graphics_for_tmux(b"plain"), b"plain".to_vec());
+    }
+
+    #[test]
+    fn painted_placeholder_cells_encode_image_id_in_color_and_diacritics() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
+        buffer[(1, 1)].set_bg(Color::Blue);
+        paint_placeholder_cells(
+            &mut buffer,
+            &[
+                PlaceholderCell {
+                    x: 1,
+                    y: 1,
+                    image_id: 0x0001_0203,
+                    row: 2,
+                    col: 5,
+                },
+                PlaceholderCell {
+                    x: 2,
+                    y: 1,
+                    image_id: 0x8100_0102,
+                    row: 0,
+                    col: 0,
+                },
+                PlaceholderCell {
+                    x: 9,
+                    y: 9,
+                    image_id: 1,
+                    row: 0,
+                    col: 0,
+                },
+            ],
+        );
+        let diacritic = |index| crate::ghostty::kitty_placeholder_diacritic(index).unwrap();
+        let cell = &buffer[(1, 1)];
+        let expected: String = ['\u{10EEEE}', diacritic(2), diacritic(5)]
+            .into_iter()
+            .collect();
+        assert_eq!(cell.symbol(), expected);
+        assert_eq!(cell.fg, Color::Rgb(0x01, 0x02, 0x03));
+        assert_eq!(cell.bg, Color::Blue);
+        let high = &buffer[(2, 1)];
+        assert_eq!(high.symbol().chars().count(), 4);
+        assert_eq!(high.symbol().chars().last(), Some(diacritic(0x81)));
+        assert_eq!(high.fg, Color::Rgb(0x00, 0x01, 0x02));
     }
 }

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 21;
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -59,6 +59,10 @@ pub enum ClientLaunchMode {
     App,
     /// Full app client eligible for audited local direct graphics.
     AppDirectGraphics,
+    /// Full app client whose host terminal sits behind a tmux pane: Kitty
+    /// graphics must be shown with unicode-placeholder virtual placements,
+    /// which the client forwards inside tmux `DCS` passthrough.
+    AppPassthroughGraphics,
     /// Direct terminal attach client.
     TerminalAttach,
 }
@@ -1030,6 +1034,24 @@ mod tests {
     use ratatui::style::{Color, Modifier};
 
     // ---- Round-trip: ClientMessage ----
+
+    #[test]
+    fn client_hello_passthrough_graphics_roundtrip() {
+        let msg = ClientMessage::Hello {
+            version: PROTOCOL_VERSION,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 8,
+            cell_height_px: 16,
+            requested_encoding: RenderEncoding::SemanticFrame,
+            keybindings: ClientKeybindings::Server,
+            launch_mode: ClientLaunchMode::AppPassthroughGraphics,
+        };
+        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
+        let (decoded, _): (ClientMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(msg, decoded);
+    }
 
     #[test]
     fn client_hello_roundtrip() {

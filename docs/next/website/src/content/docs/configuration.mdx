@@ -497,6 +497,13 @@ kitty_graphics = true
 
 Enable it only when testing terminal image behavior.
 
+A client that runs inside tmux still gets images: it detects `$TMUX`, forwards
+every Kitty command through tmux passthrough, and Herdr switches that client to
+unicode-placeholder virtual placements, which tmux forwards like ordinary cells.
+tmux needs `set -g allow-passthrough on` (or `all`, so images uploaded while
+the Herdr window is not visible are not dropped), and the outer terminal must
+support Kitty unicode placeholders (kitty, Ghostty).
+
 ## Agent session restore
 
 Herdr resumes supported Agent conversations after a server restart by default:

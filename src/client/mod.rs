@@ -61,6 +61,7 @@ struct ClientLoopConfig {
     redraw_on_focus_gained: bool,
     host_cursor: crate::config::HostCursorModeConfig,
     kitty_graphics_enabled: bool,
+    graphics_transport: crate::kitty_graphics::HostGraphicsTransport,
     mouse_capture_active: bool,
     remote_image_paste_key: Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
 }
@@ -79,6 +80,8 @@ struct ClientState {
     sound_config: crate::config::SoundConfig,
     /// Whether this client may write Kitty graphics bytes to its host terminal.
     kitty_graphics_enabled: bool,
+    /// How the host terminal accepts those bytes (raw, or wrapped for tmux).
+    graphics_transport: crate::kitty_graphics::HostGraphicsTransport,
     /// One bounded matcher, inactive unless a direct transmission is armed.
     #[cfg(unix)]
     direct_graphics_response: Arc<Mutex<direct_graphics::ResponseMatcher>>,
@@ -595,7 +598,10 @@ fn restore_terminal_state(
     reset_host_color_scheme_reports: bool,
     #[cfg(windows)] restore_windows_input_mode: Option<u32>,
 ) -> io::Result<()> {
-    let _ = clear_received_kitty_graphics(&mut io::stdout());
+    let _ = clear_received_kitty_graphics(
+        &mut io::stdout(),
+        crate::kitty_graphics::HostGraphicsTransport::from_env(),
+    );
 
     // Reset modifyOtherKeys if we enabled it.
     if reset_modify_other_keys {
@@ -813,9 +819,12 @@ fn client_launch_mode(
     exact_cell_size: bool,
     cell_width_px: u32,
     cell_height_px: u32,
+    graphics_transport: crate::kitty_graphics::HostGraphicsTransport,
 ) -> ClientLaunchMode {
     if direct_attach_requested {
         ClientLaunchMode::TerminalAttach
+    } else if graphics_transport.uses_placeholders() {
+        ClientLaunchMode::AppPassthroughGraphics
     } else if exact_cell_size
         && cell_width_px > 0
         && cell_height_px > 0
@@ -840,6 +849,7 @@ fn do_handshake(
     exact_cell_size: bool,
     requested_encoding: RenderEncoding,
     direct_attach_requested: bool,
+    graphics_transport: crate::kitty_graphics::HostGraphicsTransport,
 ) -> Result<RenderEncoding, ClientError> {
     stream
         .set_nonblocking(false)
@@ -859,6 +869,7 @@ fn do_handshake(
             exact_cell_size,
             cell_width_px,
             cell_height_px,
+            graphics_transport,
         ),
     };
     protocol::write_message(stream, &hello)
@@ -1040,6 +1051,7 @@ fn connect_terminal_session_stream(
         false,
         RenderEncoding::TerminalAnsi,
         true,
+        crate::kitty_graphics::HostGraphicsTransport::Direct,
     ) {
         Ok(RenderEncoding::TerminalAnsi) => {}
         Ok(encoding) => {
@@ -1232,12 +1244,18 @@ fn run_client_with_mode(
     let remote_image_paste_key = client_remote_image_paste_key(&loaded_config.config);
     let kitty_graphics_enabled =
         loaded_config.config.experimental.kitty_graphics && !direct_attach_requested;
+    let graphics_transport = if kitty_graphics_enabled {
+        crate::kitty_graphics::HostGraphicsTransport::from_env()
+    } else {
+        crate::kitty_graphics::HostGraphicsTransport::Direct
+    };
     let loop_config = ClientLoopConfig {
         sound_config: loaded_config.config.ui.sound,
         mouse_scroll_lines,
         redraw_on_focus_gained,
         host_cursor,
         kitty_graphics_enabled,
+        graphics_transport,
         mouse_capture_active: mouse_capture,
         remote_image_paste_key,
     };
@@ -1271,6 +1289,7 @@ fn run_client_with_mode(
         exact_cell_size,
         requested_encoding,
         direct_attach_requested,
+        graphics_transport,
     ) {
         Ok(encoding) => encoding,
         Err(err) => {
@@ -1409,6 +1428,7 @@ async fn run_client_loop(
         reported_size: (cols, rows),
         sound_config: config.sound_config,
         kitty_graphics_enabled: config.kitty_graphics_enabled,
+        graphics_transport: config.graphics_transport,
         #[cfg(unix)]
         direct_graphics_response: Arc::new(Mutex::new(direct_graphics::ResponseMatcher::default())),
         #[cfg(unix)]
@@ -1706,10 +1726,16 @@ async fn run_client_loop(
                             .encode(&frame_data, state.repaint_pending)
                     };
                     let mut stdout = io::stdout();
-                    let graphics = if state.kitty_graphics_enabled {
-                        frame_data.graphics.as_slice()
-                    } else {
+                    let wrapped_graphics;
+                    let graphics: &[u8] = if !state.kitty_graphics_enabled {
                         &[]
+                    } else if state.graphics_transport.uses_placeholders() {
+                        wrapped_graphics = crate::kitty_graphics::wrap_kitty_graphics_for_tmux(
+                            &frame_data.graphics,
+                        );
+                        wrapped_graphics.as_slice()
+                    } else {
+                        frame_data.graphics.as_slice()
                     };
                     let _ =
                         write_encoded_frame_with_graphics(&mut stdout, &encoded.bytes, graphics);
@@ -1728,6 +1754,11 @@ async fn run_client_loop(
                 ServerMessage::Graphics { bytes } => {
                     if state.kitty_graphics_enabled {
                         record_received_kitty_graphics(&bytes);
+                        let bytes = if state.graphics_transport.uses_placeholders() {
+                            crate::kitty_graphics::wrap_kitty_graphics_for_tmux(&bytes)
+                        } else {
+                            bytes
+                        };
                         let mut stdout = io::stdout();
                         let _ = stdout.write_all(&bytes);
                         let _ = stdout.flush();
@@ -2381,16 +2412,24 @@ fn record_received_kitty_graphics(bytes: &[u8]) {
     }
 }
 
-fn clear_received_kitty_graphics(mut writer: impl io::Write) -> io::Result<()> {
+fn clear_received_kitty_graphics(
+    mut writer: impl io::Write,
+    transport: crate::kitty_graphics::HostGraphicsTransport,
+) -> io::Result<()> {
     let Some(set) = RECEIVED_KITTY_GRAPHICS_IDS.get() else {
         return Ok(());
     };
     let Ok(mut set) = set.lock() else {
         return Ok(());
     };
+    let mut bytes = Vec::new();
     for id in set.drain() {
-        write!(writer, "\x1b_Ga=d,d=I,i={id},q=2;\x1b\\")?;
+        write!(bytes, "\x1b_Ga=d,d=I,i={id},q=2;\x1b\\")?;
     }
+    if transport.uses_placeholders() {
+        bytes = crate::kitty_graphics::wrap_kitty_graphics_for_tmux(&bytes);
+    }
+    writer.write_all(&bytes)?;
     writer.flush()
 }
 
@@ -2668,12 +2707,26 @@ mod tests {
 
     #[test]
     fn approximate_cell_size_never_enables_direct_graphics() {
+        let direct = crate::kitty_graphics::HostGraphicsTransport::Direct;
         assert_eq!(
-            client_launch_mode(false, false, 8, 16),
+            client_launch_mode(false, false, 8, 16, direct),
             ClientLaunchMode::App
         );
         assert_eq!(
-            client_launch_mode(true, false, 8, 16),
+            client_launch_mode(true, false, 8, 16, direct),
+            ClientLaunchMode::TerminalAttach
+        );
+    }
+
+    #[test]
+    fn tmux_hosted_clients_request_passthrough_graphics() {
+        let placeholders = crate::kitty_graphics::HostGraphicsTransport::TmuxPlaceholders;
+        assert_eq!(
+            client_launch_mode(false, true, 8, 16, placeholders),
+            ClientLaunchMode::AppPassthroughGraphics
+        );
+        assert_eq!(
+            client_launch_mode(true, true, 8, 16, placeholders),
             ClientLaunchMode::TerminalAttach
         );
     }
@@ -2999,7 +3052,11 @@ mod tests {
     fn kitty_graphics_cleanup_deletes_tracked_images_not_all_images() {
         record_received_kitty_graphics(b"\x1b_Ga=t,i=123,q=2;AAAA\x1b\\");
         let mut output = Vec::new();
-        clear_received_kitty_graphics(&mut output).unwrap();
+        clear_received_kitty_graphics(
+            &mut output,
+            crate::kitty_graphics::HostGraphicsTransport::Direct,
+        )
+        .unwrap();
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("a=d,d=I,i=123"));
         assert!(!text.contains("d=A"));

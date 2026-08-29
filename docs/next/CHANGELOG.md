@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Experimental Kitty graphics now render for clients attached from inside tmux: the client forwards graphics through tmux `DCS` passthrough and images are shown with unicode-placeholder virtual placements instead of cursor-positioned ones. Bumps the client/server protocol to 22.
 - Custom themes can now define separate light and dark color overrides when automatic theme switching is enabled. (#837, thanks @aneym)
 
 ### Fixed

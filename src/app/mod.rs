@@ -1104,6 +1104,8 @@ impl App {
                 }
                 let _sync_output = SyncOutputGuard::begin()?;
                 let kitty_graphics_enabled = self.state.kitty_graphics_enabled;
+                let graphics_transport = crate::kitty_graphics::HostGraphicsTransport::from_env();
+                let mut placeholder_graphics = Vec::new();
                 if self.full_redraw_pending {
                     for cell in &mut terminal.current_buffer_mut().content {
                         cell.set_skip(true);
@@ -1142,14 +1144,38 @@ impl App {
                         &self.terminal_runtimes,
                         frame,
                     );
+                    if kitty_graphics_enabled && graphics_transport.uses_placeholders() {
+                        // Placeholder cells are part of the frame, so encode
+                        // inside the draw and write the commands afterwards.
+                        let encoded = crate::kitty_graphics::encode_shared_local_pane_graphics(
+                            &self.state,
+                            &self.pane_graphics,
+                            &self.terminal_runtimes,
+                            cell_size,
+                            graphics_transport,
+                        );
+                        crate::kitty_graphics::paint_placeholder_cells(
+                            frame.buffer_mut(),
+                            &encoded.placeholders,
+                        );
+                        placeholder_graphics = encoded.bytes;
+                    }
                 })?;
                 if kitty_graphics_enabled {
-                    crate::kitty_graphics::paint_local_pane_graphics(
-                        &self.state,
-                        &self.pane_graphics,
-                        &self.terminal_runtimes,
-                        cell_size,
-                    )?;
+                    if graphics_transport.uses_placeholders() {
+                        crate::kitty_graphics::write_local_host_graphics(
+                            &placeholder_graphics,
+                            graphics_transport,
+                        )?;
+                    } else {
+                        crate::kitty_graphics::paint_local_pane_graphics(
+                            &self.state,
+                            &self.pane_graphics,
+                            &self.terminal_runtimes,
+                            cell_size,
+                            graphics_transport,
+                        )?;
+                    }
                 }
                 self.sync_pending_agent_resume_deadline(now);
                 if self.start_pending_agent_resumes(self.pending_agent_resume_due(now)) {

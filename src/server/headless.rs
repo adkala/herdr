@@ -1711,6 +1711,18 @@ impl HeadlessServer {
         let Some(next_focus) = client.update_outer_focus_from_events(events) else {
             return;
         };
+        // tmux only relays passthrough from a visible pane, so images uploaded
+        // while this client's window was hidden never reached its terminal.
+        // Focus coming back is the signal to rebuild host graphics from scratch.
+        if next_focus
+            && client.graphics_transport.uses_placeholders()
+            && self.app.state.kitty_graphics_enabled
+            && !client.graphics_cache.is_empty()
+        {
+            client.graphics_surface_reset_pending = true;
+            client.request_repaint();
+            self.app.render_dirty.request_generic();
+        }
         if self.foreground_client_id == Some(client_id) {
             self.app.state.outer_terminal_focus = Some(next_focus);
         }
@@ -3010,6 +3022,7 @@ impl HeadlessServer {
                 render_encoding,
                 direct_attach_requested,
                 direct_graphics,
+                graphics_transport,
             } => {
                 if self.handoff_in_progress {
                     if let Ok(message) =
@@ -3052,6 +3065,7 @@ impl HeadlessServer {
                 );
                 connection.direct_graphics = direct_graphics;
                 connection.pixel_mouse = direct_graphics;
+                connection.graphics_transport = graphics_transport;
                 self.clients.insert(client_id, connection);
                 if !direct_attach_requested {
                     self.foreground_client_id = Some(client_id);
@@ -4460,7 +4474,7 @@ impl HeadlessServer {
         for (client_id, (cols, rows), cell_size, is_foreground, mode) in render_targets {
             let area = Rect::new(0, 0, cols, rows);
             let is_app_client = matches!(mode, ClientConnectionMode::App);
-            let mut frame = match mode {
+            let (mut buffer, cursor, hyperlinks) = match mode {
                 ClientConnectionMode::App => {
                     let render_started = crate::render_prof::timer();
                     let render_cell_size =
@@ -4502,14 +4516,7 @@ impl HeadlessServer {
                         "full_render.visible_hyperlinks",
                         hyperlinks_started,
                     );
-                    let frame_started = crate::render_prof::timer();
-                    let frame = FrameData::from_ratatui_buffer_with_hyperlinks(
-                        &buffer,
-                        cursor,
-                        &hyperlinks,
-                    );
-                    crate::render_prof::duration_since("full_render.frame_build", frame_started);
-                    frame
+                    (buffer, cursor, hyperlinks)
                 }
                 ClientConnectionMode::TerminalAttach { terminal_id }
                 | ClientConnectionMode::TerminalObserve { terminal_id } => {
@@ -4538,14 +4545,7 @@ impl HeadlessServer {
                         "full_render.visible_hyperlinks",
                         hyperlinks_started,
                     );
-                    let frame_started = crate::render_prof::timer();
-                    let frame = FrameData::from_ratatui_buffer_with_hyperlinks(
-                        &buffer,
-                        cursor,
-                        &hyperlinks,
-                    );
-                    crate::render_prof::duration_since("full_render.frame_build", frame_started);
-                    frame
+                    (buffer, cursor, hyperlinks)
                 }
             };
 
@@ -4573,15 +4573,16 @@ impl HeadlessServer {
                     self.app.state.view.tab_surface(),
                     cell_size,
                     Some(crate::kitty_graphics::HEADLESS_GRAPHICS_TRANSACTION_BUDGET),
+                    client.graphics_transport,
                     &mut next_graphics_cache,
                 );
                 crate::render_prof::duration_since("full_render.graphics_encode", graphics_started);
                 encoded
             } else if self.app.pane_graphics.slots.is_empty() {
-                crate::kitty_graphics::EncodedGraphics {
-                    bytes: next_graphics_cache.clear_bytes(),
-                    incomplete: false,
-                }
+                crate::kitty_graphics::EncodedGraphics::new(
+                    next_graphics_cache.clear_bytes(),
+                    false,
+                )
             } else {
                 next_graphics_cache.clear_next()
             };
@@ -4589,7 +4590,14 @@ impl HeadlessServer {
                 reset_graphics.extend(encoded.bytes);
                 encoded.bytes = reset_graphics;
             }
-            frame.graphics = encoded.bytes;
+            if !encoded.placeholders.is_empty() {
+                crate::kitty_graphics::paint_placeholder_cells(&mut buffer, &encoded.placeholders);
+            }
+            let frame_started = crate::render_prof::timer();
+            let mut frame =
+                FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &hyperlinks);
+            crate::render_prof::duration_since("full_render.frame_build", frame_started);
+            frame.graphics = std::mem::take(&mut encoded.bytes);
 
             let Some(writer) = client.writer.as_ref().cloned() else {
                 crate::render_prof::event("full_render.writer_missing");
@@ -6183,6 +6191,7 @@ mod tests {
             keybindings: None,
             direct_attach_requested: false,
             direct_graphics: true,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer: writer_a,
         }));
         assert!(server.clients[&1].direct_graphics);
@@ -6200,6 +6209,7 @@ mod tests {
             keybindings: None,
             direct_attach_requested: false,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer: writer_b,
         }));
         assert!(!server.direct_graphics_available());
@@ -6230,6 +6240,7 @@ new_tab = "prefix+t"
             keybindings: Some(Box::new(local_keybindings)),
             direct_attach_requested: false,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer: writer_a,
         }));
         assert_eq!(
@@ -6255,6 +6266,7 @@ new_tab = "prefix+t"
             keybindings: None,
             direct_attach_requested: false,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer: writer_b,
         }));
         assert_eq!(
@@ -6296,6 +6308,7 @@ new_tab = "prefix+t"
             keybindings: Some(Box::new(local_keybindings)),
             direct_attach_requested: false,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer: writer_a,
         }));
         assert_eq!(server.app.state.config_diagnostic, without_keybindings);
@@ -6310,6 +6323,7 @@ new_tab = "prefix+t"
             keybindings: None,
             direct_attach_requested: false,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer: writer_b,
         }));
         assert_eq!(
@@ -6354,6 +6368,7 @@ next_tab = ""
             keybindings: Some(Box::new(local_keybindings)),
             direct_attach_requested: false,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer,
         }));
         server.app.state.mode = crate::app::Mode::Settings;
@@ -6430,6 +6445,7 @@ next_tab = ""
             keybindings: Some(Box::new(local_config.live_keybinds().unwrap())),
             direct_attach_requested: false,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer: writer_a,
         }));
         server.app.state.mode = crate::app::Mode::Settings;
@@ -6451,6 +6467,7 @@ next_tab = ""
             keybindings: None,
             direct_attach_requested: false,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer: writer_b,
         }));
         assert_eq!(
@@ -6486,6 +6503,7 @@ next_tab = ""
             keybindings: None,
             direct_attach_requested: true,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer,
         }));
         assert!(server.clients.contains_key(&7));
@@ -6552,6 +6570,7 @@ next_tab = ""
             keybindings: None,
             direct_attach_requested: true,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer,
         }));
         control_rx
@@ -6966,6 +6985,7 @@ next_tab = ""
             keybindings: None,
             direct_attach_requested: false,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer,
         }));
 
@@ -7001,6 +7021,7 @@ next_tab = ""
             keybindings: None,
             direct_attach_requested: true,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer,
         }));
 
@@ -7035,6 +7056,7 @@ next_tab = ""
             keybindings: None,
             direct_attach_requested: false,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer,
         }));
         assert!(server.has_app_client());
@@ -7136,6 +7158,7 @@ next_tab = ""
             keybindings: None,
             direct_attach_requested: true,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer,
         }));
         assert!(
@@ -9187,6 +9210,7 @@ next_tab = ""
             keybindings: None,
             direct_attach_requested: true,
             direct_graphics: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
             writer,
         }));
         assert!(
