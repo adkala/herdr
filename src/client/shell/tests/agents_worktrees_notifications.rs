@@ -1294,3 +1294,70 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
 }
+
+#[test]
+fn agent_rows_show_inherited_tab_titles_in_single_tab_workspaces() {
+    let agent = ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("claude".into()),
+        display_agent: None,
+        agent: Some("claude".into()),
+        title: None,
+        terminal_title: Some("⠋ Herdr config mobile layout".into()),
+        terminal_title_stripped: Some("Herdr config mobile layout".into()),
+        agent_status: AgentStatus::Working,
+        state_change_seq: 10,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    };
+    let tab = |label: &str, inherited_label: bool| ClientShellTab {
+        tab_id: "tab_1".into(),
+        workspace_id: "ws_1".into(),
+        number: 1,
+        label: label.into(),
+        custom_label: false,
+        inherited_label,
+        zoomed: false,
+        focused: true,
+        agent_status: AgentStatus::Working,
+    };
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![vec![
+        crate::config::AgentSidebarToken::Agent,
+        crate::config::AgentSidebarToken::Tab,
+    ]];
+    let render = |tab: ClientShellTab| {
+        let mut projected = snapshot();
+        projected.tabs = vec![tab];
+        projected.agents = vec![agent.clone()];
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(projected));
+        state.set_pane_surface(surface());
+        let frame = state.compose(106, 30).expect("agent sidebar frame");
+        frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // Numbered mode: a lone auto-named tab has no name worth a token.
+    let numbered = render(tab("1", false));
+    assert!(numbered.contains("claude"), "frame: {numbered}");
+    assert!(!numbered.contains("claude · 1"), "frame: {numbered}");
+
+    // An inherited pane title names the tab, so the token shows even here.
+    let inherited = render(tab("nvim init.lua", true));
+    assert!(
+        inherited.contains("claude · nvim init.lua"),
+        "frame: {inherited}"
+    );
+}

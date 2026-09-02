@@ -931,16 +931,30 @@ impl AppState {
         if let Some(name) = &tab.custom_name {
             return Some(name.clone());
         }
-        if self.tab_titles == crate::config::TabTitleMode::TerminalTitle {
-            if let Some(title) = tab
-                .terminal_id(tab.layout.focused())
-                .and_then(|terminal_id| self.terminals.get(terminal_id))
-                .and_then(|terminal| terminal.terminal_title_stripped())
-            {
-                return Some(truncated_tab_title(&title));
-            }
+        Some(
+            self.inherited_tab_title(ws, tab_idx)
+                .unwrap_or_else(|| (tab_idx + 1).to_string()),
+        )
+    }
+
+    /// The title an auto-named tab inherits from its focused pane under
+    /// `ui.tab_titles = "terminal_title"`, truncated like the tab bar shows
+    /// it. `None` in numbered mode, while the pane has no title yet, or for a
+    /// tab index that does not exist. It ignores a custom name, so callers
+    /// decide how a rename ranks against it.
+    pub(crate) fn inherited_tab_title(
+        &self,
+        ws: &crate::workspace::Workspace,
+        tab_idx: usize,
+    ) -> Option<String> {
+        if self.tab_titles != crate::config::TabTitleMode::TerminalTitle {
+            return None;
         }
-        Some((tab_idx + 1).to_string())
+        let tab = ws.tabs.get(tab_idx)?;
+        tab.terminal_id(tab.layout.focused())
+            .and_then(|terminal_id| self.terminals.get(terminal_id))
+            .and_then(|terminal| terminal.terminal_title_stripped())
+            .map(|title| truncated_tab_title(&title))
     }
 
     pub(crate) fn mark_session_dirty(&mut self) {

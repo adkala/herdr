@@ -9,6 +9,7 @@ fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
         number,
         label: number.to_string(),
         custom_label: false,
+        inherited_label: false,
         zoomed: false,
         focused: false,
         agent_status: AgentStatus::Idle,

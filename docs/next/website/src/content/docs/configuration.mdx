@@ -304,7 +304,7 @@ The sidebar is the main Herdr dashboard. Search `ui.` in the [Config reference](
 
 Set `tab_bar_position = "bottom"` under `[ui]` to place the desktop tab row below the terminal panes. Prefix, Navigate, Copy, and Resize mode bars temporarily replace the bottom tab row while active. The default is `"top"`.
 
-Tabs that were not renamed are labeled with their number. Set `tab_titles = "terminal_title"` under `[ui]` to label them with their focused pane's terminal title instead, like tmux `automatic-rename` — the label follows whatever the program in the pane last set through `OSC 0`/`OSC 2`, with agent spinner frames stripped, and falls back to the tab number while no title is set. Renamed tabs always keep their custom name, and long inherited titles are truncated so one verbose title cannot push the other tabs out of the row. The same label shows in the mobile layout, the navigator, the `{tab}` window-title token, and `herdr tab list`.
+Tabs that were not renamed are labeled with their number. Set `tab_titles = "terminal_title"` under `[ui]` to label them with their focused pane's terminal title instead, like tmux `automatic-rename` — the label follows whatever the program in the pane last set through `OSC 0`/`OSC 2`, with agent spinner frames stripped, and falls back to the tab number while no title is set. Renamed tabs always keep their custom name, and long inherited titles are truncated so one verbose title cannot push the other tabs out of the row. The same label shows in the mobile layout, the navigator, the `{tab}` window-title token, `herdr tab list`, and the sidebar's agent `tab` token, which an inherited title also fills in a single-tab workspace.
 
 Configure an ordered tmux-style status area at the right edge of the tab row:
 
@@ -376,7 +376,7 @@ Agent rows accept these built-in tokens:
 - `state_text` — `idle`, `working`, `blocked`, `done`, or `unknown`, including a reported display label when present.
 - `machine` — machine label when the client has multiple machines; omitted for a single local machine.
 - `workspace` — workspace name.
-- `tab` — tab name when available.
+- `tab` — tab name when available: a custom name, or the title an auto-named tab inherits under `ui.tab_titles = "terminal_title"`. A bare tab number only shows in multi-tab workspaces.
 - `pane` — pane name when available.
 - `agent` — detected or reported agent display name.
 - `terminal_title` — latest OSC 0/2 terminal title after safety normalization.

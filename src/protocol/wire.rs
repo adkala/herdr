@@ -1039,6 +1039,11 @@ pub struct ClientShellTab {
     pub number: usize,
     pub label: String,
     pub custom_label: bool,
+    /// Auto-named tab whose `label` was inherited from its focused pane's
+    /// terminal title (`ui.tab_titles = "terminal_title"`), so clients can
+    /// treat it as a real name rather than a placeholder number.
+    #[serde(default)]
+    pub inherited_label: bool,
     pub zoomed: bool,
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
@@ -2710,6 +2715,7 @@ mod tests {
                 number: 1,
                 label: "main".into(),
                 custom_label: true,
+                inherited_label: false,
                 zoomed: false,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
