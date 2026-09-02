@@ -321,6 +321,57 @@ fn mobile_header_and_switcher_render_released_sections_and_stable_targets() {
 }
 
 #[test]
+fn mobile_tab_status_marks_the_zoomed_active_tab() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut projected = snapshot();
+    projected.workspaces.push(ClientShellWorkspace {
+        workspace_id: "ws_2".into(),
+        active_tab_id: "tab_3".into(),
+        new_workspace_cwd: "/feature".into(),
+        number: 2,
+        label: "background".into(),
+        custom_label: true,
+        branch: Some("feature".into()),
+        git_ahead_behind: None,
+        tokens: Vec::new(),
+        worktree: None,
+        focused: false,
+        agent_status: AgentStatus::Idle,
+    });
+    // Zoom is per tab: only the active, zoomed tab carries the marker.
+    for (number, tab_id, label, zoomed) in [(1, "tab_2", "one", true), (7, "tab_3", "two", true)] {
+        projected.tabs.push(ClientShellTab {
+            tab_id: tab_id.into(),
+            workspace_id: "ws_2".into(),
+            number,
+            label: label.into(),
+            custom_label: true,
+            zoomed,
+            focused: false,
+            agent_status: AgentStatus::Idle,
+        });
+    }
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.mode = ClientShellMode::Navigate;
+    state.navigate_workspace_id = state.navigation_target(&ClientEndpointId::Local, "ws_2");
+    let frame = state.compose(44, 20).expect("mobile switcher");
+    let text = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("feature · tab two Z · 2/2"), "{text}");
+    // The focused workspace's lone tab is not zoomed, so its header stays plain.
+    assert!(!text.contains("tab 1 Z"), "{text}");
+}
+
+#[test]
 fn mobile_background_workspace_uses_its_own_active_tab_status() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     let mut projected = snapshot();
