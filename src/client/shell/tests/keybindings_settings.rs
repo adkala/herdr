@@ -121,6 +121,7 @@ fn tab_bar_renders_endpoint_status_ellipses_and_clamps_to_useful_scroll() {
             number,
             label: number.to_string(),
             custom_label: false,
+            inherited_label: false,
             zoomed: false,
             focused: false,
             agent_status: AgentStatus::Idle,

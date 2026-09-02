@@ -260,8 +260,11 @@ pub(super) fn agent_rows(
                 .iter()
                 .filter(|candidate| candidate.workspace_id == agent.workspace_id)
                 .count();
+            // An inherited pane title names the tab as much as a rename does:
+            // it earns the `tab` token even in a single-tab workspace, where a
+            // bare number would only repeat what the layout already says.
             let tab_label = tab
-                .filter(|tab| tab_count > 1 || tab.custom_label)
+                .filter(|tab| tab_count > 1 || tab.custom_label || tab.inherited_label)
                 .map(|tab| tab.label.as_str());
             let agent_label = agent
                 .display_agent

@@ -78,13 +78,14 @@ pub(super) fn snapshot(
     let tabs = snapshot
         .tabs
         .into_iter()
-        .zip(
-            app.state
-                .workspaces
+        .zip(app.state.workspaces.iter().flat_map(|workspace| {
+            workspace
+                .tabs
                 .iter()
-                .flat_map(|workspace| workspace.tabs.iter()),
-        )
-        .map(|(tab, state)| {
+                .enumerate()
+                .map(move |(tab_idx, state)| (workspace, tab_idx, state))
+        }))
+        .map(|(tab, (workspace, tab_idx, state))| {
             let tab_id = tab.tab_id;
             protocol::ClientShellTab {
                 focused: focused_tab_id.as_deref() == Some(tab_id.as_str()),
@@ -93,6 +94,8 @@ pub(super) fn snapshot(
                 number: tab.number,
                 label: tab.label,
                 custom_label: !state.is_auto_named(),
+                inherited_label: state.is_auto_named()
+                    && app.state.inherited_tab_title(workspace, tab_idx).is_some(),
                 zoomed: state.zoomed,
                 agent_status: tab.agent_status,
             }
@@ -604,6 +607,7 @@ mod tests {
         let numbered = snapshot(&app, "boot", 1, None, None);
         assert_eq!(numbered.tabs[0].label, "1");
         assert!(!numbered.tabs[0].custom_label);
+        assert!(!numbered.tabs[0].inherited_label);
 
         // The client shell's tab strip renders whatever label the server
         // projects, so the inherited (spinner-stripped) title reaches every
@@ -612,12 +616,14 @@ mod tests {
         let inherited = snapshot(&app, "boot", 2, None, None);
         assert_eq!(inherited.tabs[0].label, "nvim init.lua");
         assert!(!inherited.tabs[0].custom_label);
+        assert!(inherited.tabs[0].inherited_label);
 
         // A rename still wins over the inherited title.
         app.state.workspaces[0].tabs[0].set_custom_name("build".into());
         let renamed = snapshot(&app, "boot", 3, None, None);
         assert_eq!(renamed.tabs[0].label, "build");
         assert!(renamed.tabs[0].custom_label);
+        assert!(!renamed.tabs[0].inherited_label);
     }
 
     #[test]
