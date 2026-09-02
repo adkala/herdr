@@ -1682,3 +1682,110 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
 }
+
+#[test]
+fn agent_rows_label_tabs_with_their_own_pane_title() {
+    let agent = |pane_id: &str, title: Option<&str>, focused: bool| ClientShellAgent {
+        pane_id: pane_id.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("claude".into()),
+        display_agent: None,
+        agent: Some("claude".into()),
+        title: None,
+        terminal_title: title.map(|title| format!("⠋ {title}")),
+        terminal_title_stripped: title.map(str::to_string),
+        agent_status: AgentStatus::Working,
+        state_change_seq: 10,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused,
+    };
+    let tab = |tab_id: &str, number: usize, label: &str, custom_label, follows_pane_title| {
+        ClientShellTab {
+            tab_id: tab_id.into(),
+            workspace_id: "ws_1".into(),
+            number,
+            label: label.into(),
+            custom_label,
+            follows_pane_title,
+            zoomed: false,
+            focused: number == 1,
+            agent_status: AgentStatus::Working,
+        }
+    };
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![vec![
+        crate::config::AgentSidebarToken::Agent,
+        crate::config::AgentSidebarToken::Tab,
+    ]];
+    let render = |tabs: Vec<ClientShellTab>, agents: Vec<ClientShellAgent>| {
+        let mut projected = snapshot();
+        projected.tabs = tabs;
+        projected.agents = agents;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(projected));
+        state.set_pane_surface(surface());
+        let frame = state.compose(106, 30).expect("agent sidebar frame");
+        frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // Numbered mode: a lone auto-named tab has no name worth a token.
+    let numbered = render(
+        vec![tab("tab_1", 1, "1", false, false)],
+        vec![agent("pane_1", Some("Fix login"), true)],
+    );
+    assert!(numbered.contains("claude"), "frame: {numbered}");
+    assert!(!numbered.contains("claude · "), "frame: {numbered}");
+
+    // Two agents split one tab that follows the focused pane's title: each row
+    // names its own pane, not the focused neighbor's, even in a single tab.
+    let split = render(
+        vec![tab("tab_1", 1, "Fix login", false, true)],
+        vec![
+            agent("pane_1", Some("Fix login"), true),
+            agent("pane_2", Some("Write docs"), false),
+        ],
+    );
+    assert!(split.contains("claude · Fix login"), "frame: {split}");
+    assert!(split.contains("claude · Write docs"), "frame: {split}");
+
+    // An untitled pane falls back to the tab number where one tells tabs
+    // apart, never to the focused neighbor's title.
+    let untitled = render(
+        vec![
+            tab("tab_1", 1, "Fix login", false, true),
+            tab("tab_2", 2, "2", false, true),
+        ],
+        vec![
+            agent("pane_1", Some("Fix login"), true),
+            agent("pane_2", None, false),
+        ],
+    );
+    assert!(untitled.contains("claude · Fix login"), "frame: {untitled}");
+    assert!(untitled.contains("claude · 1"), "frame: {untitled}");
+
+    // A rename still wins over the pane title.
+    let renamed = render(
+        vec![tab("tab_1", 1, "backend", true, false)],
+        vec![
+            agent("pane_1", Some("Fix login"), true),
+            agent("pane_2", Some("Write docs"), false),
+        ],
+    );
+    assert!(!renamed.contains("Write docs"), "frame: {renamed}");
+    assert_eq!(
+        renamed.matches("claude · backend").count(),
+        2,
+        "frame: {renamed}"
+    );
+}

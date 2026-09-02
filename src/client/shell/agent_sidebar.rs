@@ -269,9 +269,28 @@ pub(super) fn agent_row(
         .iter()
         .filter(|candidate| candidate.workspace_id == agent.workspace_id)
         .count();
-    let tab_label = tab
-        .filter(|tab| tab_count > 1 || tab.custom_label)
-        .map(|tab| tab.label.as_str());
+    // A tab that follows its focused pane's title would hand every agent in a
+    // split the focused neighbor's title, so the row takes the label the tab
+    // would carry with this agent's pane focused: a rename still wins, then the
+    // pane's own title, which earns the token even in a single-tab workspace.
+    let own_title = agent
+        .terminal_title_stripped
+        .as_deref()
+        .filter(|title| !title.is_empty());
+    let tab_number;
+    let tab_label = match tab {
+        Some(tab) if tab.custom_label => Some(tab.label.as_str()),
+        Some(tab) if tab.follows_pane_title => match own_title {
+            Some(title) => Some(title),
+            None if tab_count > 1 => {
+                tab_number = tab.number.to_string();
+                Some(tab_number.as_str())
+            }
+            None => None,
+        },
+        Some(tab) if tab_count > 1 => Some(tab.label.as_str()),
+        _ => None,
+    };
     let agent_label = agent
         .display_agent
         .as_deref()
