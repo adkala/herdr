@@ -4,6 +4,7 @@
 
 ### Added
 - Auto-named tabs can now inherit their focused pane's terminal title through `ui.tab_titles = "terminal_title"`, like tmux automatic-rename; the default stays numbered tabs.
+- The mobile header and switcher now mark a zoomed tab with the same `Z` label suffix the desktop tab bar shows.
 
 ### Fixed
 - Attached clients now render colored underlines (SGR 58), so editor diagnostics such as Neovim's red undercurls keep their color instead of falling back to the text color; the client/server protocol version is now 21.

@@ -369,9 +369,15 @@ fn render_header_status(
 }
 
 fn mobile_tab_status(app: &AppState, ws: &crate::workspace::Workspace) -> String {
-    let tab_label = app
+    let mut tab_label = app
         .tab_label(ws, ws.active_tab)
         .unwrap_or_else(|| (ws.active_tab + 1).to_string());
+    // Mirror the desktop tab chrome's ` Z` suffix: the mobile layout has no tab
+    // strip or `tab_bar_right` status area, so this label is the only place a
+    // zoomed tab can announce itself.
+    if ws.tabs.get(ws.active_tab).is_some_and(|tab| tab.zoomed) {
+        tab_label.push_str(" Z");
+    }
     if ws.tabs.len() <= 1 {
         format!("tab {tab_label}")
     } else {
@@ -1508,6 +1514,23 @@ mod tests {
         let app = crate::app::state::AppState::test_new();
 
         assert_eq!(mobile_tab_status(&app, &workspace), "tab 2 · 2/2");
+    }
+
+    #[test]
+    fn mobile_tab_status_marks_zoomed_active_tab() {
+        let mut workspace = crate::workspace::Workspace::test_new("mobile-zoom");
+        let app = crate::app::state::AppState::test_new();
+        workspace.tabs[0].zoomed = true;
+
+        assert_eq!(mobile_tab_status(&app, &workspace), "tab 1 Z");
+
+        // Zoom is per tab: switching to an unzoomed tab drops the marker.
+        workspace.test_add_tab(None);
+        workspace.active_tab = 1;
+        assert_eq!(mobile_tab_status(&app, &workspace), "tab 2 · 2/2");
+
+        workspace.tabs[1].zoomed = true;
+        assert_eq!(mobile_tab_status(&app, &workspace), "tab 2 Z · 2/2");
     }
 
     #[test]
