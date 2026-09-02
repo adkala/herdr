@@ -1048,6 +1048,11 @@ pub struct ClientShellTab {
     pub number: usize,
     pub label: String,
     pub custom_label: bool,
+    /// Auto-named tab whose `label` follows its focused pane's terminal title
+    /// (`ui.tab_titles = "terminal_title"`), so clients can label a pane's own
+    /// rows with that pane's title instead of whichever pane has focus.
+    #[serde(default)]
+    pub follows_pane_title: bool,
     pub zoomed: bool,
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
@@ -2837,6 +2842,7 @@ mod tests {
                 number: 1,
                 label: "main".into(),
                 custom_label: true,
+                follows_pane_title: false,
                 zoomed: false,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
