@@ -155,17 +155,29 @@ fn collect_agent_panel_entries_with_runtimes(
             ws.pane_details(&app.terminals)
                 .into_iter()
                 .map(move |detail| {
-                    let show_tab = multi_tab
-                        || ws
-                            .tabs
-                            .get(detail.tab_idx)
-                            .is_some_and(|tab| !tab.is_auto_named());
+                    // `detail.tab_label` is the custom name or the tab number.
+                    // Under `ui.tab_titles = "terminal_title"` an auto-named
+                    // tab prefers its inherited title, and that title names
+                    // the tab as much as a rename does: it earns the `tab`
+                    // token even in a single-tab workspace, where a bare
+                    // number would only repeat what the layout already says.
+                    let renamed = ws
+                        .tabs
+                        .get(detail.tab_idx)
+                        .is_some_and(|tab| !tab.is_auto_named());
+                    let inherited_title = app.inherited_tab_title(ws, detail.tab_idx);
+                    let show_tab = multi_tab || renamed || inherited_title.is_some();
+                    let tab_label = if renamed {
+                        detail.tab_label
+                    } else {
+                        inherited_title.unwrap_or(detail.tab_label)
+                    };
                     AgentPanelEntry {
                         ws_idx,
                         tab_idx: detail.tab_idx,
                         pane_id: detail.pane_id,
                         primary_label: workspace_label.clone(),
-                        primary_tab_label: show_tab.then_some(detail.tab_label),
+                        primary_tab_label: show_tab.then_some(tab_label),
                         pane_label: detail.pane_label,
                         terminal_title: detail.terminal_title,
                         terminal_title_stripped: detail.terminal_title_stripped,
@@ -2019,6 +2031,37 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         assert!(first.contains("logs"), "rendered row: {first:?}");
         assert!(first.contains('·'), "rendered row: {first:?}");
+    }
+
+    #[test]
+    fn agent_entries_show_inherited_tab_titles_in_single_tab_workspaces() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("one");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+        terminal.detected_agent = Some(Agent::Claude);
+        terminal.set_terminal_title(Some("⠋ Herdr config mobile layout".into()));
+
+        // Numbered mode: a lone auto-named tab has no name worth a token.
+        assert_eq!(agent_panel_entries(&app)[0].primary_tab_label, None);
+
+        app.tab_titles = crate::config::TabTitleMode::TerminalTitle;
+        assert_eq!(
+            agent_panel_entries(&app)[0].primary_tab_label.as_deref(),
+            Some("Herdr config mobile layout")
+        );
+
+        // A rename still outranks the inherited title.
+        app.workspaces[0].tabs[0].set_custom_name("build".into());
+        assert_eq!(
+            agent_panel_entries(&app)[0].primary_tab_label.as_deref(),
+            Some("build")
+        );
     }
 
     #[test]

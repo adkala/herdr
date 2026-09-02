@@ -4,6 +4,7 @@
 
 ### Added
 - Auto-named tabs can now inherit their focused pane's terminal title through `ui.tab_titles = "terminal_title"`, like tmux automatic-rename; the default stays numbered tabs.
+- The sidebar's agent `tab` token now shows that inherited title, including in single-tab workspaces where a numbered tab stays hidden.
 - The mobile header and switcher now mark a zoomed tab with the same `Z` label suffix the desktop tab bar shows.
 
 ### Fixed
