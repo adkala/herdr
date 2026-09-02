@@ -116,6 +116,8 @@ pub(super) fn snapshot_with_completions(
                 number: tab.number,
                 label: tab.label,
                 custom_label: !state.is_auto_named(),
+                follows_pane_title: state.is_auto_named()
+                    && app.state.tab_titles == crate::config::TabTitleMode::TerminalTitle,
                 zoomed: state.zoomed,
                 agent_status: tab.agent_status,
             }
@@ -778,6 +780,7 @@ mod tests {
         let numbered = snapshot(&app, "boot", 1, None, None);
         assert_eq!(numbered.tabs[0].label, "1");
         assert!(!numbered.tabs[0].custom_label);
+        assert!(!numbered.tabs[0].follows_pane_title);
 
         // The client shell's tab strip renders whatever label the server
         // projects, so the inherited (spinner-stripped) title reaches every
@@ -786,12 +789,14 @@ mod tests {
         let inherited = snapshot(&app, "boot", 2, None, None);
         assert_eq!(inherited.tabs[0].label, "nvim init.lua");
         assert!(!inherited.tabs[0].custom_label);
+        assert!(inherited.tabs[0].follows_pane_title);
 
         // A rename still wins over the inherited title.
         app.state.workspaces[0].tabs[0].set_custom_name("build".into());
         let renamed = snapshot(&app, "boot", 3, None, None);
         assert_eq!(renamed.tabs[0].label, "build");
         assert!(renamed.tabs[0].custom_label);
+        assert!(!renamed.tabs[0].follows_pane_title);
     }
 
     #[test]

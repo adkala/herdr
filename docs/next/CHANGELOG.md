@@ -4,6 +4,7 @@
 
 ### Added
 - Auto-named tabs can now inherit their focused pane's terminal title through `ui.tab_titles = "terminal_title"`, like tmux automatic-rename; the default stays numbered tabs.
+- Under `ui.tab_titles = "terminal_title"`, the sidebar's agent `tab` token shows the agent's own pane title, so agents split into one tab each keep their own title. It shows even in single-tab workspaces, where a numbered tab stays hidden, and a renamed tab still shows its name.
 
 ## [0.9.5] - 2026-10-14
 
