@@ -222,10 +222,16 @@ fn compact_tab_status(snapshot: &ClientShellSnapshot, workspace: &ClientShellWor
         .iter()
         .position(|tab| tab.tab_id == workspace.active_tab_id)
         .unwrap_or(0);
-    let label = tabs
+    let mut label = tabs
         .get(active)
-        .map(|tab| tab.label.as_str())
-        .unwrap_or("1");
+        .map(|tab| tab.label.clone())
+        .unwrap_or_else(|| "1".to_owned());
+    // Mirror the desktop tab strip's ` Z` suffix: the mobile layout has no tab
+    // bar or `tab_bar_right` status area, so this label is the only place a
+    // zoomed tab can announce itself.
+    if tabs.get(active).is_some_and(|tab| tab.zoomed) {
+        label.push_str(" Z");
+    }
     if tabs.len() <= 1 {
         format!("tab {label}")
     } else {

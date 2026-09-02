@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- The mobile header and switcher now mark a zoomed tab with the same `Z` label suffix the desktop tab bar shows.
+
 ## [0.9.4] - 2026-10-13
 
 ### Added
