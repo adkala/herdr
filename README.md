@@ -8,29 +8,35 @@ upstream PR without untangling anything. Staged branches are pushed to `origin`
 
 | change | commit on `master` | staged branch | notes |
 | --- | --- | --- | --- |
-| `advanced.escape_time_ms`: configurable lone-Escape flush delay, like tmux `escape-time` (default unset — 10ms, or 150ms while mouse capture holds a pending Escape) | `5c66609`, `caf7e87` (thin-client fix), `50daaeb` (docs) | `pr/escape-time-ms` | PR candidate. `5c66609` alone was inert: it wired the key only into the in-process reader, while the thin client hardcoded its flush window, so the key measured the same at `0`, unset, and `500`. The branch squashes all three into one cherry-pickable commit |
-| `advanced.osc52_paste`: opt-in OSC 52 paste support — answers `OSC 52 ; c ; ?` clipboard read queries (off by default). `true`/`"server"` replies with the server machine's clipboard; `"terminal"` forwards the query to the local terminal so panes paste from the local clipboard over ssh | `c8f9a53`, `b7cf3dd`, `59214d5` (e2e test), `a3d6b5c` (docs) | — | PR candidate; lives on `master` only |
-| macOS manual artifact builds install patched Homebrew `zig@0.15` instead of setup-zig | `e895ee7` | — | mainly serves this fork's `dev` prerelease builds; upstreamable if wanted |
-| manual artifact builds stamp `HERDR_BUILD_CHANNEL=dev` + `HERDR_BUILD_ID=<short sha>`, so binaries report `herdr <version>-dev.<sha>` | `8b1a3da` | — | fork-only build identity; pairs with the row above |
-| `ui.focused_pane_border` / `ui.unfocused_pane_border` / `ui.dim_unfocused_panes`: separate focused-pane styling like tmux `pane-active-border-style` / `pane-border-style` / `window-style` shading | `49a466c` | `pr/focused-pane-styles` | PR candidate |
-| `ui.tab_titles = "terminal_title"`: auto-named tabs inherit their focused pane's terminal title, like tmux automatic-rename (default stays numbered tabs) | `e03a34d` | `pr/auto-tab-titles` | PR candidate |
-| attached clients render colored underlines: the wire `CellData` now carries the SGR 58 underline color and the client emits `58:2::r:g:b` / `58:5:n`, so Neovim's red diagnostic undercurls stay red through herdr (they fell back to the text color). Bumps the protocol to 21 | `e8f836a` | `pr/underline-color` | PR candidate; upstream bug, fork carries it until merged. Restart the server after installing (protocol bump) |
-| custom popup keybinds take their border title from `description` instead of always rendering the literal `popup` | `040abb1` | `pr/popup-title-from-description` | PR candidate; upstream has no other way to name a popup — `popup_pane` sits outside any workspace so `pane.rename` cannot reach it, and `$HERDR_PANE_ID` is unset inside one |
-| mobile layout marks the zoomed tab: the header's `tab N · i/n` label and the switcher's per-space detail row carry the desktop tab bar's ` Z` suffix, since mobile draws no tab strip or `tab_bar_right` status area | `01daaa2` | `pr/mobile-zoom-indicator` | PR candidate |
-| sidebar agent rows: the `tab` token shows the title an auto-named tab inherits under `ui.tab_titles = "terminal_title"` (stock only knows custom names and numbers there), and an inherited title fills it even in a single-tab workspace, so `rows = [["state_icon", "workspace"], ["agent", "tab"]]` reads `claude · <title>` | `24048fc` | `pr/sidebar-tab-label` | PR candidate; folds into `pr/auto-tab-titles` if that goes upstream |
-| `install.sh` installs the fork's Linux dev build from the `adkala/herdr` `dev` release instead of the upstream `herdr.dev` manifest (macOS still uses the manifest); checksum is skipped on that path because the `dev` release ships no sha256 manifest | `a9eb03f` | — | **fork-only, never upstream**; points the installer at the fork's own binary so `curl … install.sh \| sh` on Linux gets the dev channel, not upstream stable |
+| `advanced.escape_time_ms`: configurable lone-Escape flush delay, like tmux `escape-time` (default unset — 10ms, or 150ms while mouse capture holds a pending Escape) | `5e218ec`, `56b4a8d` (thin-client fix), `03c878a` (docs) | `pr/escape-time-ms` | PR candidate. The first commit alone was inert: it wired the key only into the in-process reader, while the thin client hardcoded its flush window. Since the 2026-09-12 rebuild only the thin-client reader exists (upstream #3487 removed the in-process `--no-session` path), so `5e218ec` now carries just the config key and `56b4a8d` the behavior. The branch squashes all three into one cherry-pickable commit |
+| `advanced.osc52_paste`: opt-in OSC 52 paste support — answers `OSC 52 ; c ; ?` clipboard read queries (off by default). `true`/`"server"` replies with the server machine's clipboard; `"terminal"` forwards the query to the local terminal so panes paste from the local clipboard over ssh | `93fc59d`, `e16fdfe`, `d2fc529` (e2e test), `d66b789` (docs) | — | PR candidate; lives on `master` only. Since the 2026-09-12 rebuild the `"terminal"` mode rides the client-shell lane: the server sends `ServerMessage::ClipboardQuery` and the shell relays its terminal's answer as `ClientMessage::ClientShellHostClipboardReply` (both appended after `EndpointControl`, wire tag 21); direct `pane attach` clients are not asked. Upstream now treats those enums as append-closed, so an upstream PR should carry the query and reply as `EndpointControl` kinds instead of new variants |
+| manual artifact builds stamp `HERDR_BUILD_CHANNEL=dev` + `HERDR_BUILD_ID=<short sha>`, so binaries report `herdr <version>-dev.<sha>` | `ee321cc` | — | fork-only build identity. The workflow otherwise follows upstream, including the Zig 0.16.0 setup-zig step |
+| `ui.focused_pane_border` / `ui.unfocused_pane_border`: separate focused-pane border colors like tmux `pane-active-border-style` / `pane-border-style` | `c255d3f` | `pr/focused-pane-styles` | PR candidate. The original `ui.dim_unfocused_panes` toggle came off in the 2026-09-12 rebuild (see below) |
+| `ui.tab_titles = "terminal_title"`: auto-named tabs inherit their focused pane's terminal title, like tmux automatic-rename (default stays numbered tabs) | `599f43f` | `pr/auto-tab-titles` | PR candidate. Since upstream #3487 the client shell draws whatever tab label the server projects, so the inherited title reaches the tab strip, mobile header, navigator and window title through the shell snapshot; a title change forces a snapshot refresh the same way sidebar title tokens do |
+| attached clients render colored underlines: the wire `CellData` now carries the SGR 58 underline color and the client emits `58:2::r:g:b` / `58:5:n`, so Neovim's red diagnostic undercurls stay red through herdr (they fell back to the text color). Bumps the protocol to 23 (upstream 0.9.0 shipped 22) | `628ecad` | `pr/underline-color` | PR candidate; upstream bug (#1252, #1169, #1178 are still open), fork carries it until merged. Restart the server after installing (protocol bump). The extra `CellData` field also changes the `shell.surface.v1` cell encoding, so a fork client and an upstream server (or vice versa) must not be mixed. Upstream's CLAUDE.md now freezes generation-1 codecs (two bincode digests were re-blessed here), so an upstream PR would have to introduce a new surface codec instead of widening `CellData` |
+| custom popup keybinds take their border title from `description` instead of always rendering the literal `popup` | `a1d06ba` | `pr/popup-title-from-description` | PR candidate; upstream has no other way to name a popup — `popup_pane` sits outside any workspace so `pane.rename` cannot reach it, and `$HERDR_PANE_ID` is unset inside one. Lives in `src/app/custom_commands.rs` since the 2026-09-12 rebuild |
+| mobile layout marks the zoomed tab: the header's `tab N · i/n` label and the switcher's per-space detail row carry the desktop tab bar's ` Z` suffix, since mobile draws no tab strip or `tab_bar_right` status area | `931ca6f` | `pr/mobile-zoom-indicator` | PR candidate; lives in `src/client/shell/mobile.rs` since the 2026-09-12 rebuild |
+| sidebar agent rows: the `tab` token shows the title an auto-named tab inherits under `ui.tab_titles = "terminal_title"` (stock only knows custom names and numbers there), and an inherited title fills it even in a single-tab workspace, so `rows = [["state_icon", "workspace"], ["agent", "tab"]]` reads `claude · <title>` | `3c4aac9` | `pr/sidebar-tab-label` | PR candidate; folds into `pr/auto-tab-titles` if that goes upstream. The client shell decides token visibility, so each snapshot tab now carries a serde-defaulted `inherited_label` flag (older snapshots still decode) |
+| `distribution/install.sh` installs the fork's Linux dev build from the `adkala/herdr` `dev` release instead of the upstream `herdr.dev` manifest (macOS still uses the manifest); checksum is skipped on that path because the `dev` release ships no sha256 manifest | `b641024` | — | **fork-only, never upstream**; points the installer at the fork's own binary so `curl … install.sh \| sh` on Linux gets the dev channel, not upstream stable. Upstream moved the script from `website/` to `distribution/` when the website left this repo |
 
 ### staged, not on `master`
 
 Reverted from `master` on 2026-07-27: each needs more work before it ships on the
 `dev` channel. Every one is intact on the branch below — nothing was discarded.
-`master` was most recently rebuilt on upstream `1c76079` (2026-08-21); the tip
-before that rebuild is kept at `backup/master-f65c269`. Earlier rebuilds are at
-`backup/master-54fe477` (onto `d76657f`, 2026-08-14) and `backup/master-0aed437`
-(onto `952729e`, 2026-08-13), and the 2026-07-27 pre-revert tip is at
-`backup/master-f2facce`. The 2026-08-21 rebuild carried every patch forward
-unchanged: upstream `d76657f..1c76079` touched none of the escape-time, OSC 52,
-focused-pane-style, popup-title, manual-build, or installer surfaces.
+`master` was most recently rebuilt on upstream `d184b41` (2026-09-12); the tip
+before that rebuild is kept at `backup/master-9931b02`. Earlier rebuilds are at
+`backup/master-f65c269` (onto `1c76079`, 2026-08-21), `backup/master-54fe477`
+(onto `d76657f`, 2026-08-14) and `backup/master-0aed437` (onto `952729e`,
+2026-08-13), and the 2026-07-27 pre-revert tip is at `backup/master-f2facce`.
+The 2026-09-12 rebuild crossed upstream's client-shell refactor (#3487: the TUI
+now renders in each client and `--no-session` is gone), the 0.9.0 release and
+the Zig 0.16.0 / libghostty upgrade (#3906), so the tab-title, mobile-zoom,
+sidebar-token and popup-title patches were ported into `src/client/shell/` and
+`src/app/custom_commands.rs` instead of carried unchanged, the OSC 52 terminal
+mode got its own client-shell message, and three things came off: the
+`ui.dim_unfocused_panes` toggle, the macOS `zig@0.15` build step, and
+`pr/pane-bin-path` (all listed below). Building now needs Zig 0.16.0 (`ZIG=…`
+or `brew install zig`).
 `backup/master-65408bd` keeps the tip before the 2026-08-22 cleanup that fixed
 the OSC 52 e2e test's wire variant index and reworded two commit subjects that
 failed upstream's conventional-commits check.
@@ -44,7 +50,9 @@ To reinstate one, cherry-pick its branch onto `master` and move its row up.
 | ~~popup `chrome = "modal"`~~ | *(branch deleted 2026-07-27)* | dropped: upstream popups already draw an accent border, an in-border title, and an opaque panel background (`PopupChrome::Pane`), so the patch only added a dimmed backdrop and a second header row. Not worth carrying. The commit survives inside `pr/popup-geometry-defaults`, and the master-side originals in `backup/master-f2facce` |
 | ~~`ui.pane_borders = "between"`~~ | `pr/split-only-pane-borders` | superseded 2026-08-01 by `ui.outer_pane_borders` (itself dropped 2026-08-13 once upstream #2535 landed `ui.pane_outer_borders` — see the row above). Came off because the divider read as one flat color; that is actually tmux's own behavior for a two-pane split (the single divider borders both panes, so it highlights either way), and the replacement keeps it deliberately. The real problem was the spelling: overloading `pane_borders` changed a key's type and dragged in the `[hdev]` overlay. Branch kept for reference only |
 | `[ui.popup]`: fallback `width`/`height`/`chrome` for popups that declare none — the only way to resize a plugin manifest pane without editing the plugin | `pr/popup-geometry-defaults` | needs more work; carries the deleted modal-chrome commit as its base (it needs `chrome`), so strip that out before this could go upstream. Also stacked on `pr/workspace-id-test-isolation` |
-| `HERDR_BIN_PATH` in every pane, not just plugin commands, plugin panes, and custom command keybinds — panes already get the socket, so they can address the server but still have to guess a client, and the API rejects a protocol mismatch outright | `pr/pane-bin-path` | needs more work |
+| ~~`HERDR_BIN_PATH` in every pane~~ | *(branch deleted 2026-09-12)* | dropped: upstream's `apply_pane_base_env` now exports `HERDR_BIN_PATH` next to `HERDR_SOCKET_PATH` for every pane, which is exactly what the branch did |
+| ~~`ui.dim_unfocused_panes`~~ | *(never branched separately)* | dropped 2026-09-12: upstream stopped dimming unfocused pane content when rendering moved into the client (#3487), so the toggle had nothing left to switch off. `pr/focused-pane-styles` keeps only the two border colors |
+| ~~macOS manual builds via Homebrew `zig@0.15`~~ | *(never branched)* | dropped 2026-09-12: upstream builds with Zig 0.16.0 through setup-zig since the libghostty upgrade (#3906); pinning `zig@0.15` would install a compiler the vendored libghostty-vt no longer accepts |
 | workspace id length test no longer depends on how many workspaces earlier tests allocated from the global counter | `pr/workspace-id-test-isolation` | test-only; came off with `pr/popup-geometry-defaults`, the only thing that needed it |
 | `[hdev]` config overlay: tables under `[hdev]` are deep-merged over the matching top-level sections before the config is deserialized, so one `config.toml` works on both binaries | `fork/hdev-config-overlay` | **fork-only, never upstream**; only earns its keep while a fork patch changes an existing key's *type*, and none do. `ui.outer_pane_borders` was spelled as a new key specifically to avoid needing this |
 
@@ -54,6 +62,14 @@ To open a PR later:
 git push origin <branch>
 gh pr create --repo ogulcancelik/herdr --head adkala:<branch>
 ```
+
+The staged `pr/*` branches for the rows above were re-cut on 2026-09-12 from
+the listed `master` commits onto upstream `d184b41`, so each still applies with
+a plain cherry-pick; `pr/sidebar-tab-label` stacks on `pr/auto-tab-titles`.
+The branches in the table below (`pr/popup-geometry-defaults`,
+`pr/workspace-id-test-isolation`, `pr/outer-pane-borders`,
+`pr/split-only-pane-borders`, `fork/hdev-config-overlay`) stay on their older
+bases.
 
 When adding a new change, commit it on a `pr/<slug>` branch based on
 `upstream/master`, cherry-pick it into `master`, and add a row above. Branches
