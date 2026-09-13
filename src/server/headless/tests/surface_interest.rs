@@ -77,6 +77,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             endpoint_keybindings: true,
             mouse_capture: true,
             surface_active: false,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -293,6 +294,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: false,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -407,6 +409,7 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
             endpoint_keybindings: true,
             mouse_capture: true,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -524,6 +527,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             endpoint_keybindings: true,
             mouse_capture: true,
             surface_active: true,
+            negotiated: Default::default(),
             writer: source_writer,
         })
     );
@@ -548,6 +552,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             endpoint_keybindings: true,
             mouse_capture: true,
             surface_active: false,
+            negotiated: Default::default(),
             writer: target_writer,
         })
     );

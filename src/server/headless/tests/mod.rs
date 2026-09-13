@@ -739,6 +739,7 @@ async fn client_shell_attach_seeds_workspace() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -772,6 +773,7 @@ async fn completion_guard_endpoint_pairs_runtime_completions_with_snapshots() {
         surface_reuse: false,
         surface_delta: false,
         surface_scroll: false,
+        negotiated: Default::default(),
         writer,
     });
     let (_, initial) = client_shell_projection(&control_rx);
@@ -831,6 +833,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -950,6 +953,7 @@ async fn client_shell_pairs_agent_view_set_replacement_and_clear_with_snapshots(
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: false,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -1053,6 +1057,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -1221,6 +1226,7 @@ fn connect_test_shell(
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -1826,6 +1832,7 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer: local_writer,
         })
     );
@@ -1851,6 +1858,7 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
             endpoint_keybindings: true,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer: endpoint_writer,
         })
     );
@@ -2771,6 +2779,7 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -3018,6 +3027,7 @@ async fn client_shell_streams_and_targets_popup_terminal_content() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -6470,6 +6480,7 @@ async fn client_shell_requests_host_pixels_for_an_unfocused_pixel_pane() {
             endpoint_keybindings: false,
             mouse_capture: true,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -7201,6 +7212,9 @@ fn clipboard_query_targets_foreground_client_and_registers_pending() {
             Some(foreground_tx),
         ),
     );
+    for client in server.clients.values_mut() {
+        client.shell_negotiated.host_clipboard_query = true;
+    }
     server.foreground_client_id = Some(2);
     server.sync_foreground_client_state();
 
@@ -7214,8 +7228,11 @@ fn clipboard_query_targets_foreground_client_and_registers_pending() {
             .recv_timeout(Duration::from_millis(100))
             .expect("foreground clipboard query message"),
     ) {
-        ServerMessage::ClipboardQuery => {}
-        other => panic!("expected clipboard query message, got {other:?}"),
+        ServerMessage::EndpointControl { kind, data } => {
+            assert_eq!(kind, crate::protocol::endpoint::HOST_CLIPBOARD_QUERY_KIND);
+            assert!(data.is_empty());
+        }
+        other => panic!("expected clipboard query control, got {other:?}"),
     }
     assert!(
         background_control_rx
@@ -7246,6 +7263,53 @@ fn clipboard_query_without_foreground_client_leaves_no_pending_query() {
     assert!(
         server.app.pending_host_clipboard_queries.is_empty(),
         "unreachable client must not leave a pending query behind"
+    );
+}
+
+#[tokio::test]
+async fn clipboard_query_answers_pane_empty_when_foreground_shell_lacks_capability() {
+    // A stock client shell (or one that predates the `host_clipboard_query`
+    // hello capability) cannot relay OSC 52 queries. The pane must get an empty
+    // reply right away instead of waiting out the host reply timeout.
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("osc52");
+    let pane_id = workspace.focused_pane_id().expect("focused pane");
+    let (runtime, mut pane_input_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+    workspace.insert_test_runtime(pane_id, runtime);
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+
+    let (foreground_tx, foreground_control_rx, _foreground_rx) = test_client_writer();
+    let foreground = ClientConnection::new(
+        (80, 24),
+        crate::kitty_graphics::HostCellSize::default(),
+        2,
+        RenderEncoding::SemanticFrame,
+        Some(foreground_tx),
+    );
+    assert!(!foreground.shell_negotiated.host_clipboard_query);
+    server.clients.insert(2, foreground);
+    server.foreground_client_id = Some(2);
+    server.sync_foreground_client_state();
+
+    let changed =
+        server.handle_internal_event_with_forwarding(AppEvent::ClipboardQuery { pane_id });
+
+    assert!(!changed);
+    assert!(
+        foreground_control_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_err(),
+        "a shell without host_clipboard_query must not be asked"
+    );
+    assert!(server.app.pending_host_clipboard_queries.is_empty());
+    assert_eq!(
+        pane_input_rx
+            .try_recv()
+            .expect("empty OSC 52 reply reaches the querying pane")
+            .as_ref(),
+        b"\x1b]52;c;\x07"
     );
 }
 
