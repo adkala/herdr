@@ -1356,5 +1356,8 @@ fn agent_rows_show_inherited_tab_titles_in_single_tab_workspaces() {
 
     // An inherited pane title names the tab, so the token shows even here.
     let inherited = render(tab("nvim init.lua", true));
-    assert!(inherited.contains("claude · nvim init.lua"), "frame: {inherited}");
+    assert!(
+        inherited.contains("claude · nvim init.lua"),
+        "frame: {inherited}"
+    );
 }
