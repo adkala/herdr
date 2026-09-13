@@ -1255,7 +1255,18 @@ async fn run_client_loop(
                 {
                     continue;
                 }
-                match *message {
+                // Legacy `shell.surface.v1` frames widen into the internal surface
+                // types here so one code path serves both negotiated codecs.
+                let message = match *message {
+                    ServerMessage::PaneSurface(surface) => {
+                        ServerMessage::PaneSurfaceV2(surface.into())
+                    }
+                    ServerMessage::PaneSurfacePatch(patch) => {
+                        ServerMessage::PaneSurfacePatchV2(patch.into())
+                    }
+                    other => other,
+                };
+                match message {
                     ServerMessage::ClientShellSnapshot(_) => {
                         let message = "server sent an unnegotiated binary endpoint snapshot";
                         if federated || !endpoint_id.is_local() {
@@ -1282,7 +1293,11 @@ async fn run_client_loop(
                             io::Error::new(io::ErrorKind::InvalidData, message),
                         )));
                     }
-                    ServerMessage::PaneSurface(surface) => {
+                    ServerMessage::PaneSurface(_) | ServerMessage::PaneSurfacePatch(_) => {
+                        // Widened into the v2 variants above.
+                        continue;
+                    }
+                    ServerMessage::PaneSurfaceV2(surface) => {
                         if activation_message {
                             let progress = pending_activation.as_mut().map(|pending| {
                                 pending.receive_surface(&endpoint_id, generation, surface)
@@ -1317,7 +1332,7 @@ async fn run_client_loop(
                             state.present_frame(frame);
                         }
                     }
-                    ServerMessage::PaneSurfacePatch(patch) => {
+                    ServerMessage::PaneSurfacePatchV2(patch) => {
                         let patch_started = crate::render_prof::timer();
                         let apply_started = crate::render_prof::timer();
                         let outcome = state

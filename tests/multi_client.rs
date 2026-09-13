@@ -17,9 +17,9 @@ use serde_json::Value;
 use support::{
     cleanup_test_base, client_shell_handshake, drain_messages, register_runtime_dir,
     register_spawned_herdr_pid, send_client_shell_focus, send_detach, unregister_spawned_herdr_pid,
-    wait_for_client_shell_bootstrap, wait_for_message_variant, wait_for_message_variants,
-    CURRENT_ENDPOINT_PROTOCOL_GENERATION as CURRENT_PROTOCOL, SERVER_MESSAGE_PANE_SURFACE,
-    SERVER_MESSAGE_PANE_SURFACE_PATCH,
+    wait_for_client_shell_bootstrap, wait_for_message_variants,
+    CURRENT_ENDPOINT_PROTOCOL_GENERATION as CURRENT_PROTOCOL, SERVER_MESSAGE_PANE_SURFACES,
+    SERVER_MESSAGE_PANE_SURFACE_UPDATES,
 };
 
 fn unique_test_dir() -> PathBuf {
@@ -333,10 +333,7 @@ fn api_pane_output_is_fanned_out_as_pane_surface_updates() {
     );
     pane_input(&api, &pane, &format!("printf '{marker}\\n'"));
     assert!(pane_contains(&api, &pane, &marker, Duration::from_secs(5)));
-    let surface_updates = [
-        SERVER_MESSAGE_PANE_SURFACE,
-        SERVER_MESSAGE_PANE_SURFACE_PATCH,
-    ];
+    let surface_updates = SERVER_MESSAGE_PANE_SURFACE_UPDATES;
     assert!(wait_for_message_variants(&mut a, Duration::from_secs(5), &surface_updates).unwrap());
     assert!(wait_for_message_variants(&mut b, Duration::from_secs(5), &surface_updates).unwrap());
     cleanup(server, base);
@@ -366,10 +363,10 @@ fn crashed_client_shell_does_not_affect_survivor() {
     let response = api_request(&api, r#"{"id":"ping","method":"ping","params":{}}"#);
     assert!(response.to_string().contains("pong"));
     pane_input(&api, &create_pane(&api, "survivor"), "printf 'survivor\\n'");
-    assert!(wait_for_message_variant(
+    assert!(wait_for_message_variants(
         &mut survivor,
         Duration::from_secs(5),
-        SERVER_MESSAGE_PANE_SURFACE
+        &SERVER_MESSAGE_PANE_SURFACES
     )
     .unwrap());
     cleanup(server, base);

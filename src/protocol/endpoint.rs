@@ -18,6 +18,10 @@ pub const ENDPOINT_WELCOME_KIND: &str = "endpoint.welcome.v1";
 pub const SNAPSHOT_CODEC_V1: &str = "shell.snapshot.v1";
 pub const ENDPOINT_SNAPSHOT_KIND: &str = SNAPSHOT_CODEC_V1;
 pub const SURFACE_CODEC_V1: &str = "shell.surface.v1";
+/// `shell.surface.v1` plus a per-cell SGR 58 underline color, carried by the
+/// appended `ServerMessage::PaneSurfaceV2` / `PaneSurfacePatchV2` variants.
+/// Those tags only reach a shell whose hello negotiated this codec.
+pub const SURFACE_CODEC_V2: &str = "shell.surface.v2";
 pub const INPUT_CODEC_V1: &str = "shell.input.semantic.v1";
 pub const BLOB_CODEC_V1: &str = "shell.blob.v1";
 pub const SURFACE_INTEREST_CAPABILITY: &str = "surface_interest";
@@ -46,6 +50,51 @@ pub const MAX_HOST_CLIPBOARD_REPLY_BYTES: usize = 512 * 1024;
 
 fn default_true() -> bool {
     true
+}
+
+/// Pane surface codec negotiated for one client-owned shell connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SurfaceCodec {
+    /// Generation-1 floor: `ServerMessage::PaneSurface` / `PaneSurfacePatch`
+    /// with the frozen `CellDataV1` layout.
+    #[default]
+    V1,
+    /// `ServerMessage::PaneSurfaceV2` / `PaneSurfacePatchV2` with underline colors.
+    V2,
+}
+
+impl SurfaceCodec {
+    /// Codecs this build speaks, most capable first.
+    pub const SUPPORTED: [SurfaceCodec; 2] = [SurfaceCodec::V2, SurfaceCodec::V1];
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::V1 => SURFACE_CODEC_V1,
+            Self::V2 => SURFACE_CODEC_V2,
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::SUPPORTED
+            .into_iter()
+            .find(|codec| codec.name() == name)
+    }
+
+    /// Picks the first codec in the client's preference order that this server
+    /// speaks. `None` means the client offered nothing usable;
+    /// `EndpointClientHello::supports_required_codecs` separately guarantees
+    /// that v1 is offered.
+    pub fn negotiate(offered: &[String]) -> Option<Self> {
+        offered.iter().find_map(|name| Self::parse(name))
+    }
+
+    /// Names to advertise in a hello, most capable first.
+    pub fn offered_names() -> Vec<String> {
+        Self::SUPPORTED
+            .into_iter()
+            .map(|codec| codec.name().to_owned())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,12 +223,12 @@ impl EndpointClientHello {
 }
 
 impl EndpointServerWelcome {
-    pub fn compatible(methods: Vec<String>) -> Self {
+    pub fn compatible(methods: Vec<String>, surface_codec: SurfaceCodec) -> Self {
         Self {
             generation: ENDPOINT_PROTOCOL_GENERATION,
             server_version: crate::build_info::version(),
             snapshot_codec: SNAPSHOT_CODEC_V1.into(),
-            surface_codec: SURFACE_CODEC_V1.into(),
+            surface_codec: surface_codec.name().into(),
             input_codec: INPUT_CODEC_V1.into(),
             blob_codec: BLOB_CODEC_V1.into(),
             methods,
@@ -407,8 +456,49 @@ mod tests {
     }
 
     #[test]
+    fn surface_codec_negotiation_follows_client_preference() {
+        let offered = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            SurfaceCodec::negotiate(&offered(&[SURFACE_CODEC_V1])),
+            Some(SurfaceCodec::V1)
+        );
+        assert_eq!(
+            SurfaceCodec::negotiate(&offered(&[SURFACE_CODEC_V2, SURFACE_CODEC_V1])),
+            Some(SurfaceCodec::V2)
+        );
+        assert_eq!(
+            SurfaceCodec::negotiate(&offered(&[
+                "shell.surface.v9",
+                SURFACE_CODEC_V1,
+                SURFACE_CODEC_V2
+            ])),
+            Some(SurfaceCodec::V1),
+            "unknown future codecs are skipped and the client's order wins"
+        );
+        assert_eq!(
+            SurfaceCodec::negotiate(&offered(&["shell.surface.v9"])),
+            None
+        );
+        assert_eq!(SurfaceCodec::default(), SurfaceCodec::V1);
+        assert_eq!(
+            SurfaceCodec::offered_names(),
+            vec![SURFACE_CODEC_V2.to_owned(), SURFACE_CODEC_V1.to_owned()]
+        );
+
+        let welcome = EndpointServerWelcome::compatible(Vec::new(), SurfaceCodec::V2);
+        assert_eq!(welcome.surface_codec, SURFACE_CODEC_V2);
+        let welcome = EndpointServerWelcome::compatible(Vec::new(), SurfaceCodec::V1);
+        assert_eq!(welcome.surface_codec, SURFACE_CODEC_V1);
+    }
+
+    #[test]
     fn compatible_server_advertises_endpoint_lifecycle_capabilities() {
-        let welcome = EndpointServerWelcome::compatible(Vec::new());
+        let welcome = EndpointServerWelcome::compatible(Vec::new(), SurfaceCodec::V1);
         assert_eq!(
             welcome.capabilities,
             vec![
@@ -441,7 +531,8 @@ mod tests {
 
     #[test]
     fn welcome_ignores_future_named_fields() {
-        let welcome = EndpointServerWelcome::compatible(vec!["pane.close".into()]);
+        let welcome =
+            EndpointServerWelcome::compatible(vec!["pane.close".into()], SurfaceCodec::V1);
         let mut value = serde_json::to_value(&welcome).unwrap();
         value["future_service"] = serde_json::json!("v2");
         let decoded: EndpointServerWelcome = serde_json::from_value(value).unwrap();

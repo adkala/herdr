@@ -173,7 +173,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert_eq!(server.effective_size, (101, 37));
 
     server.render_and_stream();
-    let ServerMessage::PaneSurface(surface) =
+    let ServerMessage::PaneSurfaceV2(surface) =
         read_server_message(render_rx.recv().expect("activated surface"))
     else {
         panic!("expected pane surface");
@@ -249,7 +249,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     };
     assert!(reactivation_floor > activation_floor);
     server.render_and_stream();
-    let ServerMessage::PaneSurface(surface) =
+    let ServerMessage::PaneSurfaceV2(surface) =
         read_server_message(render_rx.recv().expect("reactivated surface"))
     else {
         panic!("expected replacement pane surface");
@@ -689,7 +689,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         snapshot_progress,
         crate::client::endpoint::SurfaceActivationProgress::Pending
     );
-    let ServerMessage::PaneSurface(coherent_surface) =
+    let ServerMessage::PaneSurfaceV2(coherent_surface) =
         read_server_message(target_render.recv().expect("target replacement surface"))
     else {
         panic!("expected target pane surface");
@@ -764,7 +764,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         sync_progress,
         crate::client::endpoint::SurfaceActivationProgress::Pending
     );
-    let ServerMessage::PaneSurface(sync_surface) =
+    let ServerMessage::PaneSurfaceV2(sync_surface) =
         read_server_message(target_render.recv().expect("presentation sync surface"))
     else {
         panic!("expected synchronized target surface");

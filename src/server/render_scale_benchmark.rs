@@ -7,7 +7,8 @@ use crate::app::{App, AppPolicy};
 use crate::client::{ClientShellConfig, ClientShellState};
 use crate::config::Config;
 use crate::kitty_graphics::HostCellSize;
-use crate::protocol::PaneSurfaceFrame;
+use crate::protocol::endpoint::SurfaceCodec;
+use crate::protocol::{PaneSurfaceFrame, RenderEncoding};
 use crate::terminal::TerminalRuntime;
 use crate::workspace::Workspace;
 
@@ -73,8 +74,26 @@ impl RenderPipeline {
     }
 
     fn render_once(&mut self) -> (Duration, Duration) {
-        let surface_size = self.client.surface_size(COLS, ROWS);
         let started = Instant::now();
+        let surface = self.render_surface();
+        let server_elapsed = started.elapsed();
+
+        let started = Instant::now();
+        self.client.set_pane_surface(surface);
+        black_box(
+            self.client
+                .compose(COLS, ROWS)
+                .expect("benchmark pipeline should compose a complete frame"),
+        );
+        let client_elapsed = started.elapsed();
+
+        (server_elapsed, client_elapsed)
+    }
+
+    /// Renders the active-tab pane surface exactly as the server would for this
+    /// client, without composing it.
+    fn render_surface(&mut self) -> PaneSurfaceFrame {
+        let surface_size = self.client.surface_size(COLS, ROWS);
         let target = self
             .app
             .state
@@ -96,11 +115,8 @@ impl RenderPipeline {
             &self.graphics_delivery,
             1,
         );
-        let server_elapsed = started.elapsed();
         self.graphics_delivery = rendered.graphics_delivery;
-
-        let started = Instant::now();
-        self.client.set_pane_surface(PaneSurfaceFrame {
+        PaneSurfaceFrame {
             boot_id: "bench-boot".into(),
             projection_revision: 1,
             surface_revision: 0,
@@ -109,15 +125,7 @@ impl RenderPipeline {
             splits: rendered.splits,
             popup: rendered.popup,
             graphics: rendered.graphics,
-        });
-        black_box(
-            self.client
-                .compose(COLS, ROWS)
-                .expect("benchmark pipeline should compose a complete frame"),
-        );
-        let client_elapsed = started.elapsed();
-
-        (server_elapsed, client_elapsed)
+        }
     }
 }
 
@@ -269,6 +277,56 @@ fn print_snapshot_encoding_profiles(label: &str, build: fn(usize) -> Vec<Workspa
     }
 }
 
+/// Per-client cost of turning one rendered surface into its wire message for a
+/// negotiated surface codec: baseline bookkeeping, the v1 projection when the
+/// client is legacy, and bincode framing. This is the path that scales with
+/// attached clients, so v1 and v2 are reported side by side.
+fn profile_surface_encoding(
+    build: fn(usize) -> Vec<Workspace>,
+    count: usize,
+    codec: SurfaceCodec,
+) -> StageStats {
+    let mut pipeline = RenderPipeline::new(build(count));
+    let surface = pipeline.render_surface();
+    let run = || {
+        let input = surface.clone();
+        let mut state = super::render_stream::ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let started = Instant::now();
+        let prepared = state
+            .prepare_pane_surface(input, codec)
+            .expect("fresh baseline always prepares a surface");
+        black_box(
+            bincode::serde::encode_to_vec(prepared.message(), bincode::config::standard())
+                .expect("benchmark surface message should frame"),
+        );
+        started.elapsed()
+    };
+    for _ in 0..WARMUP_COUNT {
+        black_box(run());
+    }
+    summarize((0..SAMPLE_COUNT).map(|_| run()).collect())
+}
+
+fn print_surface_encoding_profiles(label: &str, build: fn(usize) -> Vec<Workspace>) {
+    println!("{label} surface codec message + bincode framing (per client)");
+    println!("       panes  codec  median_us  p95_us  max_us");
+    for count in CARDINALITIES {
+        for codec in SurfaceCodec::SUPPORTED {
+            let stats = profile_surface_encoding(build, count, codec);
+            println!(
+                "  {count:>10}  {:>5}  {:>9}  {:>6}  {:>6}",
+                match codec {
+                    SurfaceCodec::V1 => "v1",
+                    SurfaceCodec::V2 => "v2",
+                },
+                stats.median_us,
+                stats.p95_us,
+                stats.max_us
+            );
+        }
+    }
+}
+
 fn print_token_rule_profiles() {
     let rules = std::iter::repeat_n(
         "{ contains = 'NO-MATCH', ignore_case = true, bold = true }",
@@ -319,5 +377,6 @@ async fn render_scale_profile() {
     print_snapshot_encoding_profiles("background workspaces", workspaces);
     print_profiles("active panes (one workspace)", active_panes);
     print_snapshot_encoding_profiles("active panes", active_panes);
+    print_surface_encoding_profiles("active panes", active_panes);
     print_token_rule_profiles();
 }

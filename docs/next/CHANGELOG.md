@@ -10,7 +10,7 @@
 - The mobile header and switcher now mark a zoomed tab with the same `Z` label suffix the desktop tab bar shows.
 
 ### Fixed
-- Attached clients now render colored underlines (SGR 58), so editor diagnostics such as Neovim's red undercurls keep their color instead of falling back to the text color; the client/server protocol version is now 23.
+- Attached clients now render colored underlines (SGR 58), so editor diagnostics such as Neovim's red undercurls keep their color instead of falling back to the text color. The color travels in a new negotiated `shell.surface.v2` surface codec; clients that only speak `shell.surface.v1` keep receiving unchanged v1 frames, and the private protocol version stays at 22.
 
 ## [0.9.0] - 2026-09-07
 

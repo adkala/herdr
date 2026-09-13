@@ -137,6 +137,8 @@ pub(crate) struct ClientShellNegotiated {
     /// The shell relays OSC 52 clipboard queries to its outer terminal
     /// (`host_clipboard_query` hello capability).
     pub(crate) host_clipboard_query: bool,
+    /// Pane surface codec the hello negotiated; v1 is the generation-1 floor.
+    pub(crate) surface_codec: crate::protocol::endpoint::SurfaceCodec,
 }
 
 /// A connected client tracked by the server.

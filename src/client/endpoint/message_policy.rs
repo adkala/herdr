@@ -35,6 +35,7 @@ pub(crate) fn accepts_endpoint_message(
             && matches!(
                 message,
                 ServerMessage::PaneSurface(_)
+                    | ServerMessage::PaneSurfaceV2(_)
                     | ServerMessage::ClientShellEndpointResponseChunk { .. }
             ))
         || (command_response

@@ -15,13 +15,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde_json::Value;
 use support::{
-    cleanup_test_base, client_shell_handshake, read_server_message, register_runtime_dir,
+    cleanup_test_base, client_shell_handshake, client_shell_handshake_with_options,
+    decode_pane_surface_shape, read_server_message, register_runtime_dir,
     register_spawned_herdr_pid, send_client_shell_focus, send_host_clipboard_reply,
     unregister_spawned_herdr_pid, wait_for_client_shell_bootstrap, wait_for_endpoint_control_kind,
-    wait_for_message_variant, wait_for_message_variants, wait_for_socket, wait_until,
-    CURRENT_ENDPOINT_PROTOCOL_GENERATION as CURRENT_PROTOCOL, ENDPOINT_HOST_CLIPBOARD_QUERY_KIND,
-    SERVER_MESSAGE_PANE_SURFACE, SERVER_MESSAGE_PANE_SURFACE_PATCH,
-    SERVER_MESSAGE_SEMANTIC_NOTIFICATION, SERVER_MESSAGE_SERVER_SHUTDOWN,
+    wait_for_message_variants, wait_for_socket, wait_until,
+    CURRENT_ENDPOINT_PROTOCOL_GENERATION as CURRENT_PROTOCOL,
+    ENDPOINT_HOST_CLIPBOARD_QUERY_CAPABILITY, ENDPOINT_HOST_CLIPBOARD_QUERY_KIND,
+    SERVER_MESSAGE_PANE_SURFACE, SERVER_MESSAGE_PANE_SURFACE_UPDATES,
+    SERVER_MESSAGE_PANE_SURFACE_V2, SERVER_MESSAGE_SEMANTIC_NOTIFICATION,
+    SERVER_MESSAGE_SERVER_SHUTDOWN, SURFACE_CODEC_V1, SURFACE_CODEC_V2,
 };
 
 fn unique_test_dir() -> PathBuf {
@@ -1553,11 +1556,21 @@ fn client_receives_pane_surface_after_pane_output() {
     wait_for_socket(&api_socket, Duration::from_secs(10));
     wait_for_socket(&client_socket, Duration::from_secs(10));
 
+    // The real client offers `shell.surface.v2` first, so a current server
+    // answers v2 and streams the appended `PaneSurfaceV2` variant.
     let mut stream = UnixStream::connect(&client_socket).expect("should connect to client socket");
-    let (version, error) = client_shell_handshake(&mut stream, CURRENT_PROTOCOL, 54, 23)
-        .expect("handshake should succeed");
-    assert_eq!(version, CURRENT_PROTOCOL);
-    assert!(error.is_none(), "{error:?}");
+    let handshake = client_shell_handshake_with_options(
+        &mut stream,
+        CURRENT_PROTOCOL,
+        54,
+        23,
+        &[ENDPOINT_HOST_CLIPBOARD_QUERY_CAPABILITY],
+        &[SURFACE_CODEC_V2, SURFACE_CODEC_V1],
+    )
+    .expect("handshake should succeed");
+    assert_eq!(handshake.generation, CURRENT_PROTOCOL);
+    assert!(handshake.error.is_none(), "{:?}", handshake.error);
+    assert_eq!(handshake.surface_codec.as_deref(), Some(SURFACE_CODEC_V2));
     wait_for_client_shell_bootstrap(&mut stream, Duration::from_secs(10))
         .expect("initial client shell bootstrap");
 
@@ -1573,12 +1586,14 @@ fn client_receives_pane_surface_after_pane_output() {
     let pane_id = created["result"]["root_pane"]["pane_id"]
         .as_str()
         .expect("root pane id");
-    assert!(wait_for_message_variant(
+    let surface = wait_for_message_payload(
         &mut stream,
         Duration::from_secs(5),
-        SERVER_MESSAGE_PANE_SURFACE,
+        SERVER_MESSAGE_PANE_SURFACE_V2,
     )
-    .expect("wait for created workspace surface"));
+    .expect("wait for created workspace surface");
+    let shape = decode_pane_surface_shape(&surface, false).expect("decodable v2 surface");
+    assert!(shape.width > 0 && shape.height > 0, "{shape:?}");
 
     let sent = send_json_request(
         &api_socket,
@@ -1594,13 +1609,92 @@ fn client_receives_pane_surface_after_pane_output() {
         wait_for_message_variants(
             &mut stream,
             Duration::from_secs(5),
-            &[
-                SERVER_MESSAGE_PANE_SURFACE,
-                SERVER_MESSAGE_PANE_SURFACE_PATCH,
-            ],
+            &SERVER_MESSAGE_PANE_SURFACE_UPDATES,
         )
         .expect("wait for post-output pane surface"),
         "should receive a pane surface update after pane output"
+    );
+
+    cleanup_spawned_herdr(spawned, base);
+}
+
+/// Reads until a message with `variant` arrives and returns its payload with
+/// the variant tag re-attached, or `None` when `timeout` elapses.
+fn wait_for_message_payload(
+    stream: &mut UnixStream,
+    timeout: Duration,
+    variant: u32,
+) -> Option<Vec<u8>> {
+    stream
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .expect("set read timeout");
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Ok((got, payload)) = read_server_message(stream) {
+            if got == variant {
+                let mut framed = vec![u8::try_from(got).expect("small variant tag")];
+                framed.extend_from_slice(&payload);
+                return Some(framed);
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn legacy_v1_surface_handshake_receives_decodable_v1_frames() {
+    // A stock generation-1 client (upstream 0.9.0) offers only
+    // `shell.surface.v1` and predates hello capabilities. It must be welcomed
+    // with v1 and receive the frozen `PaneSurface` variant whose cells carry
+    // no underline color, byte-compatible with what upstream ships.
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+
+    let spawned = spawn_server(&config_home, &runtime_dir, &api_socket, &client_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&client_socket, Duration::from_secs(10));
+
+    let mut stream = UnixStream::connect(&client_socket).expect("should connect to client socket");
+    let handshake = client_shell_handshake_with_options(
+        &mut stream,
+        CURRENT_PROTOCOL,
+        54,
+        23,
+        &[],
+        &[SURFACE_CODEC_V1],
+    )
+    .expect("legacy handshake should succeed");
+    assert_eq!(handshake.generation, CURRENT_PROTOCOL);
+    assert!(handshake.error.is_none(), "{:?}", handshake.error);
+    assert_eq!(handshake.surface_codec.as_deref(), Some(SURFACE_CODEC_V1));
+    wait_for_client_shell_bootstrap(&mut stream, Duration::from_secs(10))
+        .expect("initial client shell bootstrap");
+
+    let created = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "create-legacy-workspace",
+            "method": "workspace.create",
+            "params": {"label": "legacy", "focus": true}
+        })
+        .to_string(),
+    );
+    assert!(created.get("error").is_none(), "{created}");
+    let surface = wait_for_message_payload(
+        &mut stream,
+        Duration::from_secs(5),
+        SERVER_MESSAGE_PANE_SURFACE,
+    )
+    .expect("legacy client should receive the frozen PaneSurface variant");
+    let shape = decode_pane_surface_shape(&surface, true).expect("decodable v1 surface");
+    assert!(shape.width > 0 && shape.height > 0, "{shape:?}");
+    assert!(
+        decode_pane_surface_shape(&surface, false).is_err(),
+        "v1 cells must not carry the v2 underline color field"
     );
 
     cleanup_spawned_herdr(spawned, base);

@@ -10,9 +10,9 @@ use tracing::info;
 
 use crate::ipc::LocalStream;
 use crate::protocol::endpoint::{
-    EndpointClientHello, EndpointServerWelcome, BLOB_CODEC_V1, ENDPOINT_HELLO_KIND,
+    EndpointClientHello, EndpointServerWelcome, SurfaceCodec, BLOB_CODEC_V1, ENDPOINT_HELLO_KIND,
     ENDPOINT_PROTOCOL_GENERATION, ENDPOINT_WELCOME_KIND, HOST_CLIPBOARD_QUERY_CAPABILITY,
-    INPUT_CODEC_V1, SNAPSHOT_CODEC_V1, SURFACE_CODEC_V1,
+    INPUT_CODEC_V1, SNAPSHOT_CODEC_V1,
 };
 use crate::protocol::{
     self, ClientMessage, RenderEncoding, ServerMessage, MAX_FRAME_SIZE, PROTOCOL_VERSION,
@@ -183,7 +183,8 @@ pub(super) fn do_handshake(
             mouse_capture,
             surface_active,
             snapshot_codecs: vec![SNAPSHOT_CODEC_V1.into()],
-            surface_codecs: vec![SURFACE_CODEC_V1.into()],
+            // Most capable first; the server answers with the first one it speaks.
+            surface_codecs: SurfaceCodec::offered_names(),
             input_codecs: vec![INPUT_CODEC_V1.into()],
             blob_codecs: vec![BLOB_CODEC_V1.into()],
             capabilities: vec![HOST_CLIPBOARD_QUERY_CAPABILITY.into()],
@@ -250,9 +251,10 @@ pub(super) fn do_handshake(
                 error: error.message,
             });
         }
+        let surface_codec = SurfaceCodec::parse(&welcome.surface_codec);
         if welcome.generation != ENDPOINT_PROTOCOL_GENERATION
             || welcome.snapshot_codec != SNAPSHOT_CODEC_V1
-            || welcome.surface_codec != SURFACE_CODEC_V1
+            || surface_codec.is_none()
             || welcome.input_codec != INPUT_CODEC_V1
             || welcome.blob_codec != BLOB_CODEC_V1
         {
@@ -264,6 +266,7 @@ pub(super) fn do_handshake(
         info!(
             generation = welcome.generation,
             server_version = %welcome.server_version,
+            surface_codec = %welcome.surface_codec,
             "endpoint handshake succeeded"
         );
         return Ok(HandshakeResult {
