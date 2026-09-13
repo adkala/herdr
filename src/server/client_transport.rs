@@ -19,7 +19,7 @@ use tracing::{debug, warn};
 use crate::ipc::LocalStream;
 use crate::protocol::endpoint::{
     EndpointClientHello, EndpointServerWelcome, ENDPOINT_HELLO_KIND, ENDPOINT_PROTOCOL_GENERATION,
-    ENDPOINT_WELCOME_KIND,
+    ENDPOINT_WELCOME_KIND, HOST_CLIPBOARD_REPLY_KIND,
 };
 use crate::protocol::{
     self, AttachScrollDirection, AttachScrollSource, ClientMessage, ClientPaneInputEvent,
@@ -419,6 +419,8 @@ pub(crate) enum ServerEvent {
         surface_reuse: bool,
         surface_delta: bool,
         surface_scroll: bool,
+        /// Optional features the hello advertised beyond the generation-1 core.
+        negotiated: crate::server::clients::ClientShellNegotiated,
         writer: ClientWriter,
     },
     /// A client sent an input message.
@@ -516,7 +518,8 @@ pub(crate) enum ServerEvent {
         client_id: u64,
         update: crate::protocol::ClientHostThemeUpdate,
     },
-    /// A client-owned shell relayed its outer terminal's OSC 52 clipboard reply.
+    /// A client-owned shell relayed its outer terminal's OSC 52 clipboard reply
+    /// (`HOST_CLIPBOARD_REPLY_KIND`); `data` is the already-decoded base64 text.
     ClientShellHostClipboardReply { client_id: u64, data: String },
     /// A client-owned shell reported whether its outer terminal has focus.
     ClientShellFocus { client_id: u64, focused: bool },
@@ -665,6 +668,19 @@ fn set_client_recv_timeout(
     stream.set_recv_timeout(timeout)
 }
 
+/// Client-owned shell options accepted from an endpoint hello.
+struct ShellHelloOptions {
+    pixel_mouse: bool,
+    direct_graphics: bool,
+    endpoint_keybindings: bool,
+    mouse_capture: bool,
+    surface_active: bool,
+    surface_reuse: bool,
+    surface_delta: bool,
+    surface_scroll: bool,
+    negotiated: crate::server::clients::ClientShellNegotiated,
+}
+
 /// Handles the client handshake on a blocking thread.
 ///
 /// Reads the `TerminalHello` or `ClientShellHello` message, validates the version,
@@ -780,16 +796,19 @@ pub(crate) fn handle_client_handshake(
                 hello.cell_width_px,
                 hello.cell_height_px,
                 false,
-                Some((
-                    hello.pixel_mouse,
-                    hello.direct_graphics,
-                    hello.endpoint_keybindings,
-                    hello.mouse_capture,
-                    hello.surface_active,
-                    hello.surface_reuse,
-                    hello.surface_delta,
-                    hello.surface_scroll,
-                )),
+                Some(ShellHelloOptions {
+                    pixel_mouse: hello.pixel_mouse,
+                    direct_graphics: hello.direct_graphics,
+                    endpoint_keybindings: hello.endpoint_keybindings,
+                    mouse_capture: hello.mouse_capture,
+                    surface_active: hello.surface_active,
+                    surface_reuse: hello.surface_reuse,
+                    surface_delta: hello.surface_delta,
+                    surface_scroll: hello.surface_scroll,
+                    negotiated: crate::server::clients::ClientShellNegotiated {
+                        host_clipboard_query: hello.supports_host_clipboard_query(),
+                    },
+                }),
             )
         }
         ClientMessage::ClientShellHello { .. } => {
@@ -877,7 +896,7 @@ pub(crate) fn handle_client_handshake(
 
     // Notify the main loop about the new client.
     let endpoint_control_writer = shell_options.as_ref().map(|_| writer.control.clone());
-    let connected = if let Some((
+    let connected = if let Some(ShellHelloOptions {
         pixel_mouse,
         direct_graphics,
         endpoint_keybindings,
@@ -886,7 +905,8 @@ pub(crate) fn handle_client_handshake(
         surface_reuse,
         surface_delta,
         surface_scroll,
-    )) = shell_options
+        negotiated,
+    }) = shell_options
     {
         ServerEvent::ClientShellConnected {
             client_id,
@@ -902,6 +922,7 @@ pub(crate) fn handle_client_handshake(
             surface_reuse,
             surface_delta,
             surface_scroll,
+            negotiated,
             writer,
         }
     } else {
@@ -1189,9 +1210,7 @@ fn client_read_loop_with_endpoint_controls(
                 }
                 ServerEvent::ClientShellHostTheme { client_id, update }
             }
-            ClientMessage::ClientShellHostClipboardReply { data } => {
-                ServerEvent::ClientShellHostClipboardReply { client_id, data }
-            }
+
             ClientMessage::ClientShellFocus { focused } => {
                 ServerEvent::ClientShellFocus { client_id, focused }
             }
@@ -1351,6 +1370,12 @@ fn client_read_loop_with_endpoint_controls(
                     token: data,
                 }
             }
+            ClientMessage::EndpointControl { kind, data } if kind == HOST_CLIPBOARD_REPLY_KIND => {
+                ServerEvent::ClientShellHostClipboardReply {
+                    client_id,
+                    data: crate::protocol::endpoint::decode_host_clipboard_reply(&data),
+                }
+            }
             ClientMessage::EndpointControl { kind, data } => {
                 let Some(response) = crate::server::client_endpoint_control::response(&kind, data)
                 else {
@@ -1486,6 +1511,7 @@ mod tests {
             surface_codecs: vec![crate::protocol::endpoint::SURFACE_CODEC_V1.into()],
             input_codecs: vec![crate::protocol::endpoint::INPUT_CODEC_V1.into()],
             blob_codecs: vec![crate::protocol::endpoint::BLOB_CODEC_V1.into()],
+            capabilities: vec![crate::protocol::endpoint::HOST_CLIPBOARD_QUERY_CAPABILITY.into()],
         };
         ClientMessage::EndpointControl {
             kind: ENDPOINT_HELLO_KIND.into(),
@@ -2000,6 +2026,7 @@ mod tests {
                 surface_reuse,
                 surface_delta,
                 surface_scroll,
+                negotiated,
                 writer,
             } => {
                 assert!(!surface_reuse);
@@ -2012,6 +2039,7 @@ mod tests {
                 assert!(direct_graphics);
                 assert!(endpoint_keybindings);
                 assert!(mouse_capture);
+                assert!(negotiated.host_clipboard_query);
                 assert!(surface_active);
                 drop(writer);
             }
