@@ -16,10 +16,10 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde_json::Value;
 use support::{
     cleanup_test_base, client_shell_handshake, read_server_message, register_runtime_dir,
-    register_spawned_herdr_pid, send_client_shell_focus, send_client_shell_host_clipboard_reply,
-    unregister_spawned_herdr_pid, wait_for_client_shell_bootstrap, wait_for_message_variant,
-    wait_for_message_variants, wait_for_socket, wait_until,
-    CURRENT_ENDPOINT_PROTOCOL_GENERATION as CURRENT_PROTOCOL, SERVER_MESSAGE_CLIPBOARD_QUERY,
+    register_spawned_herdr_pid, send_client_shell_focus, send_host_clipboard_reply,
+    unregister_spawned_herdr_pid, wait_for_client_shell_bootstrap, wait_for_endpoint_control_kind,
+    wait_for_message_variant, wait_for_message_variants, wait_for_socket, wait_until,
+    CURRENT_ENDPOINT_PROTOCOL_GENERATION as CURRENT_PROTOCOL, ENDPOINT_HOST_CLIPBOARD_QUERY_KIND,
     SERVER_MESSAGE_PANE_SURFACE, SERVER_MESSAGE_PANE_SURFACE_PATCH,
     SERVER_MESSAGE_SEMANTIC_NOTIFICATION, SERVER_MESSAGE_SERVER_SHUTDOWN,
 };
@@ -1610,10 +1610,11 @@ fn client_receives_pane_surface_after_pane_output() {
 fn osc52_terminal_paste_round_trip_reaches_pane() {
     // End-to-end test for `advanced.osc52_paste = "terminal"`:
     // 1. A pane application emits an OSC 52 clipboard read query.
-    // 2. The server forwards it to the attached client shell as
-    //    ServerMessage::ClipboardQuery.
+    // 2. The server forwards it to the attached client shell (which advertised
+    //    `host_clipboard_query` in its hello) as the named endpoint control
+    //    `endpoint.clipboard.query.v1`.
     // 3. The client shell answers the way it does after its outer terminal
-    //    replied: ClientMessage::ClientShellHostClipboardReply.
+    //    replied: `endpoint.clipboard.reply.v1` with `{"data": "<base64>"}`.
     // 4. The server routes the reply into the querying pane's PTY, where the
     //    pane application reads it as its paste.
     let _lock = test_lock();
@@ -1702,19 +1703,22 @@ fn osc52_terminal_paste_round_trip_reaches_pane() {
     send_pane_shell_command(&api_socket, &pane_id, &pane_command);
 
     // The server must forward the pane's query to this foreground client as
-    // ServerMessage::ClipboardQuery.
-    let got_query = wait_for_message_variant(
+    // the named clipboard query control.
+    let query = wait_for_endpoint_control_kind(
         &mut stream,
         Duration::from_secs(10),
-        SERVER_MESSAGE_CLIPBOARD_QUERY,
+        ENDPOINT_HOST_CLIPBOARD_QUERY_KIND,
     )
     .expect("wait for clipboard query");
-    assert!(got_query, "should receive ServerMessage::ClipboardQuery");
+    assert_eq!(
+        query.as_deref(),
+        Some(""),
+        "should receive the endpoint clipboard query control with empty data"
+    );
 
     // Answer like the client shell does once its OSC 52-capable terminal
     // replied on the shell's stdin.
-    send_client_shell_host_clipboard_reply(&mut stream, "dGVzdC1wYXN0ZQ==")
-        .expect("relay host clipboard reply");
+    send_host_clipboard_reply(&mut stream, "dGVzdC1wYXN0ZQ==").expect("relay host clipboard reply");
 
     // The pane application must receive the reply on its PTY.
     let reply_captured = wait_until(Duration::from_secs(10), Duration::from_millis(50), || {

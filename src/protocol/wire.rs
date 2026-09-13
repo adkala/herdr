@@ -620,11 +620,6 @@ pub enum ClientMessage {
     /// This variant is append-only. Its bincode tag and two-string payload are part
     /// of endpoint generation 1 and must not change.
     EndpointControl { kind: String, data: String },
-
-    /// A client-owned shell relays its outer terminal's OSC 52 clipboard reply
-    /// (`advanced.osc52_paste = "terminal"`). `data` is the base64 payload,
-    /// empty when the terminal answered without clipboard data.
-    ClientShellHostClipboardReply { data: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1461,11 +1456,6 @@ pub enum ServerMessage {
     /// This variant is append-only. Its bincode tag and two-string payload are part
     /// of endpoint generation 1 and must not change.
     EndpointControl { kind: String, data: String },
-
-    /// Ask the foreground client to query its outer terminal's clipboard with
-    /// OSC 52 (`advanced.osc52_paste = "terminal"`). The terminal's reply
-    /// comes back as `ClientMessage::ClientShellHostClipboardReply`.
-    ClipboardQuery,
 }
 
 // ---------------------------------------------------------------------------
@@ -1996,12 +1986,6 @@ mod tests {
             }),
             20
         );
-        assert_eq!(
-            tag(&ClientMessage::ClientShellHostClipboardReply {
-                data: String::new(),
-            }),
-            21
-        );
     }
 
     #[test]
@@ -2399,32 +2383,6 @@ mod tests {
     }
 
     #[test]
-    fn server_clipboard_query_roundtrip() {
-        let msg = ServerMessage::ClipboardQuery;
-        let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
-        let (decoded, _): (ServerMessage, _) =
-            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
-        assert_eq!(msg, decoded);
-    }
-
-    #[test]
-    fn server_clipboard_query_wire_variant() {
-        // tests/client_mode.rs drives the client socket by raw variant index
-        // (SERVER_CLIPBOARD_QUERY_VARIANT) because it cannot name this enum.
-        let encoded = bincode::serde::encode_to_vec(
-            &ServerMessage::ClipboardQuery,
-            bincode::config::standard(),
-        )
-        .unwrap();
-        assert_eq!(
-            encoded,
-            vec![21],
-            "ServerMessage::ClipboardQuery moved on the wire; update \
-             SERVER_MESSAGE_CLIPBOARD_QUERY in tests/support/mod.rs"
-        );
-    }
-
-    #[test]
     fn server_frame_roundtrip_nontrivial() {
         // Build a 3×2 frame with varied styles (≥2×2).
         let frame = FrameData {
@@ -2713,7 +2671,6 @@ mod tests {
             }),
             20
         );
-        assert_eq!(tag(&ServerMessage::ClipboardQuery), 21);
     }
 
     #[test]

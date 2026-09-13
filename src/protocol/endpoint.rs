@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ClientShellSnapshot, ClientSurfaceSize, ServerMessage};
+use super::{ClientMessage, ClientShellSnapshot, ClientSurfaceSize, ServerMessage};
 
 pub const ENDPOINT_PROTOCOL_GENERATION: u32 = 1;
 pub const ENDPOINT_HELLO_KIND: &str = "endpoint.hello.v1";
@@ -27,6 +27,22 @@ pub const PRESENTATION_EFFECTS_READY_KIND: &str = "endpoint.presentation.ready.v
 pub const HEALTH_CHECK_CAPABILITY: &str = "health_check";
 pub const HEALTH_PING_KIND: &str = "endpoint.health.ping.v1";
 pub const HEALTH_PONG_KIND: &str = "endpoint.health.pong.v1";
+/// Client hello capability: the client shell relays OSC 52 clipboard read
+/// queries to its outer terminal and answers with `HOST_CLIPBOARD_REPLY_KIND`.
+/// Servers only forward `advanced.osc52_paste = "terminal"` queries to a
+/// foreground shell that advertised it; other panes get an immediate empty
+/// reply instead of waiting for a timeout.
+pub const HOST_CLIPBOARD_QUERY_CAPABILITY: &str = "host_clipboard_query";
+/// Server to client: query the outer terminal's clipboard with OSC 52.
+/// `data` is empty and reserved.
+pub const HOST_CLIPBOARD_QUERY_KIND: &str = "endpoint.clipboard.query.v1";
+/// Client to server: the outer terminal's OSC 52 reply as [`HostClipboardReply`]
+/// JSON. Malformed or oversized payloads decode as an empty reply.
+pub const HOST_CLIPBOARD_REPLY_KIND: &str = "endpoint.clipboard.reply.v1";
+/// Upper bound on a relayed clipboard reply payload (base64 text). Matches the
+/// client raw-input framer's cap so a runaway terminal reply cannot grow
+/// server-side buffers; larger payloads decode as an empty reply.
+pub const MAX_HOST_CLIPBOARD_REPLY_BYTES: usize = 512 * 1024;
 
 fn default_true() -> bool {
     true
@@ -52,6 +68,56 @@ pub struct EndpointClientHello {
     pub input_codecs: Vec<String>,
     #[serde(default)]
     pub blob_codecs: Vec<String>,
+    /// Optional client features the server may use (for example
+    /// `host_clipboard_query`). Unknown names are ignored; an absent list means
+    /// none, so generation-1 hellos without it stay valid.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+/// Payload of a `HOST_CLIPBOARD_REPLY_KIND` control: the outer terminal's OSC 52
+/// answer as base64, empty when the terminal had no clipboard data.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct HostClipboardReply {
+    #[serde(default)]
+    pub data: String,
+}
+
+/// Builds the server-to-client control asking the foreground shell to query its
+/// outer terminal's clipboard with OSC 52.
+pub fn host_clipboard_query_message() -> ServerMessage {
+    ServerMessage::EndpointControl {
+        kind: HOST_CLIPBOARD_QUERY_KIND.into(),
+        data: String::new(),
+    }
+}
+
+/// Builds the client-to-server control relaying an outer terminal's OSC 52 reply.
+pub fn host_clipboard_reply_message(data: String) -> ClientMessage {
+    let reply = HostClipboardReply { data };
+    // A one-field struct of `String` cannot fail to serialize; fall back to an
+    // empty reply rather than panicking if that ever changes.
+    let data = serde_json::to_string(&reply).unwrap_or_else(|_| r#"{"data":""}"#.to_owned());
+    ClientMessage::EndpointControl {
+        kind: HOST_CLIPBOARD_REPLY_KIND.into(),
+        data,
+    }
+}
+
+/// Decodes a `HOST_CLIPBOARD_REPLY_KIND` payload into its base64 text. Invalid
+/// JSON and payloads over [`MAX_HOST_CLIPBOARD_REPLY_BYTES`] become an empty
+/// reply so the waiting pane still unblocks without pasting garbage.
+pub fn decode_host_clipboard_reply(data: &str) -> String {
+    // The JSON wrapper adds a fixed envelope around the base64 text; reject
+    // clearly oversized bodies before parsing them.
+    const JSON_ENVELOPE_SLACK: usize = 64;
+    if data.len() > MAX_HOST_CLIPBOARD_REPLY_BYTES + JSON_ENVELOPE_SLACK {
+        return String::new();
+    }
+    match serde_json::from_str::<HostClipboardReply>(data) {
+        Ok(reply) if reply.data.len() <= MAX_HOST_CLIPBOARD_REPLY_BYTES => reply.data,
+        Ok(_) | Err(_) => String::new(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +163,13 @@ impl EndpointClientHello {
                 .iter()
                 .any(|codec| codec == INPUT_CODEC_V1)
             && self.blob_codecs.iter().any(|codec| codec == BLOB_CODEC_V1)
+    }
+
+    /// Whether the client shell relays OSC 52 clipboard queries to its terminal.
+    pub fn supports_host_clipboard_query(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability == HOST_CLIPBOARD_QUERY_CAPABILITY)
     }
 }
 
@@ -156,6 +229,7 @@ mod tests {
             surface_codecs: vec![SURFACE_CODEC_V1.into()],
             input_codecs: vec![INPUT_CODEC_V1.into()],
             blob_codecs: vec![BLOB_CODEC_V1.into()],
+            capabilities: Vec::new(),
         }
     }
 
@@ -265,6 +339,63 @@ mod tests {
             decoded.commands[0].action,
             crate::protocol::ClientShellCommandAction::Unknown
         );
+    }
+
+    #[test]
+    fn hello_without_capabilities_decodes_with_none() {
+        // The frozen generation-1 hello predates the capability list.
+        let hello: EndpointClientHello = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-hello-v1.json"
+        )))
+        .unwrap();
+        assert!(hello.capabilities.is_empty());
+        assert!(!hello.supports_host_clipboard_query());
+
+        let mut value = serde_json::to_value(hello).unwrap();
+        value["capabilities"] = serde_json::json!(["future_feature", "host_clipboard_query"]);
+        let decoded: EndpointClientHello = serde_json::from_value(value).unwrap();
+        assert!(decoded.supports_host_clipboard_query());
+    }
+
+    #[test]
+    fn host_clipboard_reply_round_trips_as_named_control() {
+        let ClientMessage::EndpointControl { kind, data } =
+            host_clipboard_reply_message("aGVsbG8=".into())
+        else {
+            panic!("reply should use endpoint control");
+        };
+        assert_eq!(kind, HOST_CLIPBOARD_REPLY_KIND);
+        assert_eq!(data, r#"{"data":"aGVsbG8="}"#);
+        assert_eq!(decode_host_clipboard_reply(&data), "aGVsbG8=");
+
+        let ServerMessage::EndpointControl { kind, data } = host_clipboard_query_message() else {
+            panic!("query should use endpoint control");
+        };
+        assert_eq!(kind, HOST_CLIPBOARD_QUERY_KIND);
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn host_clipboard_reply_decode_tolerates_bad_payloads() {
+        assert_eq!(decode_host_clipboard_reply("{}"), "");
+        assert_eq!(decode_host_clipboard_reply("not json"), "");
+        assert_eq!(decode_host_clipboard_reply(r#"{"data":"","future":1}"#), "");
+        assert_eq!(
+            decode_host_clipboard_reply(r#"{"data":"YQ==","future":true}"#),
+            "YQ=="
+        );
+
+        let oversized = "A".repeat(MAX_HOST_CLIPBOARD_REPLY_BYTES + 1);
+        let payload = serde_json::to_string(&HostClipboardReply { data: oversized }).unwrap();
+        assert_eq!(decode_host_clipboard_reply(&payload), "");
+
+        let at_cap = "A".repeat(MAX_HOST_CLIPBOARD_REPLY_BYTES);
+        let payload = serde_json::to_string(&HostClipboardReply {
+            data: at_cap.clone(),
+        })
+        .unwrap();
+        assert_eq!(decode_host_clipboard_reply(&payload), at_cap);
     }
 
     #[test]

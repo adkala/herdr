@@ -287,7 +287,9 @@ impl ClientShellState {
                 RawInputEvent::HostClipboardReply { data } => {
                     outcome
                         .requests
-                        .push(ClientMessage::ClientShellHostClipboardReply { data });
+                        .push(crate::protocol::endpoint::host_clipboard_reply_message(
+                            data,
+                        ));
                 }
                 RawInputEvent::HostDefaultColor { .. }
                 | RawInputEvent::HostPaletteColors { .. }

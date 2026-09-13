@@ -129,10 +129,22 @@ impl ClientShellLocation {
     }
 }
 
+/// Optional endpoint features a client-owned shell negotiated in its hello.
+/// Everything here defaults to the generation-1 baseline so a hello that
+/// predates a feature behaves exactly like one that declined it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ClientShellNegotiated {
+    /// The shell relays OSC 52 clipboard queries to its outer terminal
+    /// (`host_clipboard_query` hello capability).
+    pub(crate) host_clipboard_query: bool,
+}
+
 /// A connected client tracked by the server.
 pub(crate) struct ClientConnection {
     /// Whether this connection owns the Herdr shell or one direct terminal stream.
     pub(crate) mode: ClientConnectionMode,
+    /// Optional features negotiated by a client-owned shell's hello.
+    pub(crate) shell_negotiated: ClientShellNegotiated,
     /// The client's terminal size after clamping.
     pub(crate) terminal_size: (u16, u16),
     /// Pixel size of one client terminal cell.
@@ -222,6 +234,7 @@ impl ClientConnection {
     ) -> Self {
         Self {
             mode,
+            shell_negotiated: ClientShellNegotiated::default(),
             terminal_size,
             cell_size,
             last_activity,
@@ -461,6 +474,12 @@ impl ClientConnection {
 
     pub(crate) fn is_active_shell_client(&self) -> bool {
         self.is_shell_client() && self.shell_surface_active
+    }
+
+    /// Whether this client can be asked to answer a pane's OSC 52 clipboard
+    /// query from its outer terminal.
+    pub(crate) fn can_answer_host_clipboard_query(&self) -> bool {
+        self.is_shell_client() && self.shell_negotiated.host_clipboard_query
     }
 }
 

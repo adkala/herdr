@@ -20,14 +20,16 @@ pub const SERVER_MESSAGE_ENDPOINT_CONTROL: u32 = 20;
 pub const SERVER_MESSAGE_PANE_SURFACE: u32 = 13;
 pub const SERVER_MESSAGE_SEMANTIC_NOTIFICATION: u32 = 14;
 pub const SERVER_MESSAGE_PANE_SURFACE_PATCH: u32 = 19;
-/// `ServerMessage::ClipboardQuery` (fork: `advanced.osc52_paste = "terminal"`),
-/// appended after `EndpointControl`; pinned by
-/// `protocol::wire::tests::server_clipboard_query_wire_variant`.
-pub const SERVER_MESSAGE_CLIPBOARD_QUERY: u32 = 21;
 const CLIENT_MESSAGE_CLIENT_SHELL_PANE_INPUT: u32 = 13;
 const CLIENT_MESSAGE_CLIENT_SHELL_FOCUS: u32 = 18;
 const CLIENT_MESSAGE_ENDPOINT_CONTROL: u32 = 20;
-const CLIENT_MESSAGE_CLIENT_SHELL_HOST_CLIPBOARD_REPLY: u32 = 21;
+/// Named endpoint controls for `advanced.osc52_paste = "terminal"`: the server
+/// asks the foreground shell with the query kind and the shell answers with the
+/// reply kind (`{"data":"<base64>"}`), both riding `EndpointControl`.
+pub const ENDPOINT_HOST_CLIPBOARD_QUERY_KIND: &str = "endpoint.clipboard.query.v1";
+pub const ENDPOINT_HOST_CLIPBOARD_REPLY_KIND: &str = "endpoint.clipboard.reply.v1";
+/// Hello capability a shell advertises so the server forwards clipboard queries to it.
+pub const ENDPOINT_HOST_CLIPBOARD_QUERY_CAPABILITY: &str = "host_clipboard_query";
 
 pub fn register_spawned_herdr_pid(pid: Option<u32>) {
     let Some(pid) = pid else {
@@ -295,13 +297,33 @@ pub fn client_handshake(
     decode_welcome(&response)
 }
 
+/// Performs the stable endpoint handshake the way the real client shell does,
+/// advertising every optional capability the client binary supports.
 pub fn client_shell_handshake(
     stream: &mut UnixStream,
     endpoint_generation: u32,
     surface_cols: u16,
     surface_rows: u16,
 ) -> Result<(u32, Option<String>), String> {
-    let data = serde_json::json!({
+    client_shell_handshake_with_capabilities(
+        stream,
+        endpoint_generation,
+        surface_cols,
+        surface_rows,
+        &[ENDPOINT_HOST_CLIPBOARD_QUERY_CAPABILITY],
+    )
+}
+
+/// Performs the endpoint handshake with an explicit hello capability list. An
+/// empty list reproduces a stock generation-1 client that predates capabilities.
+pub fn client_shell_handshake_with_capabilities(
+    stream: &mut UnixStream,
+    endpoint_generation: u32,
+    surface_cols: u16,
+    surface_rows: u16,
+    capabilities: &[&str],
+) -> Result<(u32, Option<String>), String> {
+    let mut hello = serde_json::json!({
         "generation": endpoint_generation,
         "cell_width_px": 8,
         "cell_height_px": 16,
@@ -314,8 +336,11 @@ pub fn client_shell_handshake(
         "surface_codecs": ["shell.surface.v1"],
         "input_codecs": ["shell.input.semantic.v1"],
         "blob_codecs": ["shell.blob.v1"]
-    })
-    .to_string();
+    });
+    if !capabilities.is_empty() {
+        hello["capabilities"] = serde_json::json!(capabilities);
+    }
+    let data = hello.to_string();
     let hello_payload = encode_varint_enum(
         CLIENT_MESSAGE_ENDPOINT_CONTROL,
         &[&encode_string("endpoint.hello.v1"), &encode_string(&data)],
@@ -404,22 +429,62 @@ pub fn send_client_shell_focus(stream: &mut UnixStream, focused: bool) -> Result
         .map_err(|e| format!("flush client shell focus: {e}"))
 }
 
-/// Relays an outer terminal's OSC 52 clipboard reply the way the client shell
-/// does after it forwarded `ServerMessage::ClipboardQuery` to its terminal.
-pub fn send_client_shell_host_clipboard_reply(
+/// Sends one named `ClientMessage::EndpointControl { kind, data }`.
+pub fn send_endpoint_control(
     stream: &mut UnixStream,
+    kind: &str,
     data: &str,
 ) -> Result<(), String> {
     let payload = encode_varint_enum(
-        CLIENT_MESSAGE_CLIENT_SHELL_HOST_CLIPBOARD_REPLY,
-        &[&encode_string(data)],
+        CLIENT_MESSAGE_ENDPOINT_CONTROL,
+        &[&encode_string(kind), &encode_string(data)],
     );
     stream
         .write_all(&frame_message(&payload))
-        .map_err(|e| format!("write client shell host clipboard reply: {e}"))?;
+        .map_err(|e| format!("write endpoint control {kind}: {e}"))?;
     stream
         .flush()
-        .map_err(|e| format!("flush client shell host clipboard reply: {e}"))
+        .map_err(|e| format!("flush endpoint control {kind}: {e}"))
+}
+
+/// Relays an outer terminal's OSC 52 clipboard reply the way the client shell
+/// does after it forwarded the server's clipboard query to its terminal.
+pub fn send_host_clipboard_reply(stream: &mut UnixStream, data: &str) -> Result<(), String> {
+    send_endpoint_control(
+        stream,
+        ENDPOINT_HOST_CLIPBOARD_REPLY_KIND,
+        &serde_json::json!({ "data": data }).to_string(),
+    )
+}
+
+/// Reads messages until a `ServerMessage::EndpointControl` with `kind` arrives,
+/// returning its `data`; `Ok(None)` once `timeout` elapses. Other messages are
+/// consumed and skipped.
+pub fn wait_for_endpoint_control_kind(
+    stream: &mut UnixStream,
+    timeout: Duration,
+    kind: &str,
+) -> Result<Option<String>, String> {
+    let read_timeout = Some(Duration::from_millis(200));
+    if stream.read_timeout().map_err(|e| e.to_string())? != read_timeout {
+        stream
+            .set_read_timeout(read_timeout)
+            .map_err(|e| e.to_string())?;
+    }
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match read_server_message(stream) {
+            Ok((SERVER_MESSAGE_ENDPOINT_CONTROL, payload)) => {
+                let mut offset = 0;
+                let got_kind = decode_string(&payload, &mut offset)?;
+                if got_kind == kind {
+                    return Ok(Some(decode_string(&payload, &mut offset)?));
+                }
+            }
+            Ok(_) | Err(_) => continue,
+        }
+    }
+    Ok(None)
 }
 
 pub fn send_detach(stream: &mut UnixStream) -> Result<(), String> {

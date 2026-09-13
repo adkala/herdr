@@ -1740,10 +1740,6 @@ async fn run_client_loop(
                         }
                         let _ = io::stdout().flush();
                     }
-                    ServerMessage::ClipboardQuery => {
-                        let _ = io::stdout().write_all(crate::selection::OSC52_CLIPBOARD_QUERY);
-                        let _ = io::stdout().flush();
-                    }
                     ServerMessage::WindowTitle { title } => {
                         let _ = crate::terminal_effects::write_window_title(
                             &mut io::stdout(),
@@ -1833,6 +1829,23 @@ async fn run_client_loop(
                         }
                         let snapshot = match endpoint::decode_endpoint_control(&kind, &data) {
                             Ok(endpoint::EndpointControlMessage::HealthPong) => continue,
+                            Ok(endpoint::EndpointControlMessage::HostClipboardQuery) => {
+                                // Only the endpoint holding the host presentation may
+                                // talk to the outer terminal. Answer an inactive
+                                // endpoint empty so its pane does not wait out the
+                                // server-side reply timeout.
+                                if endpoint_active {
+                                    let _ = endpoint::write_host_clipboard_query(&mut io::stdout());
+                                } else {
+                                    write_stream.send_to(
+                                        &endpoint_id,
+                                        &crate::protocol::endpoint::host_clipboard_reply_message(
+                                            String::new(),
+                                        ),
+                                    );
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;

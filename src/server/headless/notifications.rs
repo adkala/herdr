@@ -353,13 +353,22 @@ impl HeadlessServer {
             }
             AppEvent::ClipboardQuery { pane_id } => {
                 // Ask the foreground client's outer terminal for its clipboard; the
-                // reply comes back through that client's shell lane. With no
-                // reachable client (or a full queue) answer empty immediately so the
-                // querying pane application unblocks.
+                // reply comes back as a named endpoint control on that client's
+                // shell lane. Only a shell that advertised `host_clipboard_query`
+                // can answer: with a stock client, a direct `pane attach`, no
+                // client at all, or a full queue, answer empty immediately so the
+                // querying pane application unblocks instead of waiting out the
+                // reply timeout.
                 let pane_id = *pane_id;
-                if !self.app.register_host_clipboard_query(pane_id) {
+                let foreground_can_answer = self
+                    .foreground_client_id
+                    .and_then(|client_id| self.clients.get(&client_id))
+                    .is_some_and(ClientConnection::can_answer_host_clipboard_query);
+                if !foreground_can_answer || !self.app.register_host_clipboard_query(pane_id) {
                     self.app.answer_pane_clipboard_query(pane_id, "");
-                } else if !self.send_to_foreground_client(ServerMessage::ClipboardQuery) {
+                } else if !self.send_to_foreground_client(
+                    crate::protocol::endpoint::host_clipboard_query_message(),
+                ) {
                     if let Some(position) = self
                         .app
                         .pending_host_clipboard_queries
