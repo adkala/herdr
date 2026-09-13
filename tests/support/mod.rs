@@ -20,6 +20,22 @@ pub const SERVER_MESSAGE_ENDPOINT_CONTROL: u32 = 20;
 pub const SERVER_MESSAGE_PANE_SURFACE: u32 = 13;
 pub const SERVER_MESSAGE_SEMANTIC_NOTIFICATION: u32 = 14;
 pub const SERVER_MESSAGE_PANE_SURFACE_PATCH: u32 = 19;
+/// `shell.surface.v2` surfaces (`ServerMessage::PaneSurfaceV2` / `PaneSurfacePatchV2`),
+/// appended after `EndpointControl` and only sent to shells that negotiated v2.
+pub const SERVER_MESSAGE_PANE_SURFACE_V2: u32 = 21;
+pub const SERVER_MESSAGE_PANE_SURFACE_PATCH_V2: u32 = 22;
+/// Every complete-surface variant, whichever codec the handshake negotiated.
+pub const SERVER_MESSAGE_PANE_SURFACES: [u32; 2] =
+    [SERVER_MESSAGE_PANE_SURFACE, SERVER_MESSAGE_PANE_SURFACE_V2];
+/// Every surface update variant (complete or incremental) for either codec.
+pub const SERVER_MESSAGE_PANE_SURFACE_UPDATES: [u32; 4] = [
+    SERVER_MESSAGE_PANE_SURFACE,
+    SERVER_MESSAGE_PANE_SURFACE_PATCH,
+    SERVER_MESSAGE_PANE_SURFACE_V2,
+    SERVER_MESSAGE_PANE_SURFACE_PATCH_V2,
+];
+pub const SURFACE_CODEC_V1: &str = "shell.surface.v1";
+pub const SURFACE_CODEC_V2: &str = "shell.surface.v2";
 const CLIENT_MESSAGE_CLIENT_SHELL_PANE_INPUT: u32 = 13;
 const CLIENT_MESSAGE_CLIENT_SHELL_FOCUS: u32 = 18;
 const CLIENT_MESSAGE_ENDPOINT_CONTROL: u32 = 20;
@@ -127,6 +143,99 @@ fn encode_varint_u32(v: u32) -> Vec<u8> {
         buf.extend_from_slice(&v.to_le_bytes());
         buf
     }
+}
+
+fn decode_varint_u64(payload: &[u8], offset: usize) -> Result<(u64, usize), String> {
+    let first = *payload
+        .get(offset)
+        .ok_or_else(|| "payload too short for varint".to_owned())?;
+    let width = match first {
+        0..=250 => return Ok((u64::from(first), 1)),
+        251 => 2,
+        252 => 4,
+        253 => 8,
+        _ => return Err(format!("unsupported varint tag: {first}")),
+    };
+    let bytes = payload
+        .get(offset + 1..offset + 1 + width)
+        .ok_or_else(|| format!("payload too short for {width}-byte varint"))?;
+    let mut buf = [0u8; 8];
+    buf[..width].copy_from_slice(bytes);
+    Ok((u64::from_le_bytes(buf), 1 + width))
+}
+
+/// Structural shape of a decoded pane surface frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneSurfaceShape {
+    pub width: u16,
+    pub height: u16,
+    pub cells: usize,
+}
+
+/// Walks a `PaneSurface` (`v1_cells = true`, six fields per cell) or
+/// `PaneSurfaceV2` (`v1_cells = false`, plus the trailing `underline_color`)
+/// payload far enough to prove the cell layout matches the negotiated codec:
+/// every cell decodes and the cell count equals `width * height`. A frame
+/// encoded with the other cell layout desynchronizes and fails this check.
+pub fn decode_pane_surface_shape(
+    payload: &[u8],
+    v1_cells: bool,
+) -> Result<PaneSurfaceShape, String> {
+    let mut offset = 0;
+    let (_variant, consumed) = decode_varint_u32(payload, offset)?;
+    offset += consumed;
+    let _boot_id = decode_string(payload, &mut offset)?;
+    for _revision in 0..2 {
+        let (_, consumed) = decode_varint_u64(payload, offset)?;
+        offset += consumed;
+    }
+    let (cells, consumed) = decode_varint_u64(payload, offset)?;
+    offset += consumed;
+    let cells = usize::try_from(cells).map_err(|e| e.to_string())?;
+    for index in 0..cells {
+        let _symbol =
+            decode_string(payload, &mut offset).map_err(|e| format!("cell {index} symbol: {e}"))?;
+        // fg, bg (u32) and modifier (u16) are all varints.
+        for _ in 0..3 {
+            let (_, consumed) =
+                decode_varint_u64(payload, offset).map_err(|e| format!("cell {index}: {e}"))?;
+            offset += consumed;
+        }
+        match payload.get(offset) {
+            Some(0 | 1) => offset += 1,
+            other => return Err(format!("cell {index}: invalid skip byte {other:?}")),
+        }
+        match payload.get(offset) {
+            Some(0) => offset += 1,
+            Some(1) => {
+                offset += 1;
+                let (_, consumed) = decode_varint_u64(payload, offset)
+                    .map_err(|e| format!("cell {index} hyperlink: {e}"))?;
+                offset += consumed;
+            }
+            other => return Err(format!("cell {index}: invalid hyperlink tag {other:?}")),
+        }
+        if !v1_cells {
+            let (_, consumed) = decode_varint_u64(payload, offset)
+                .map_err(|e| format!("cell {index} underline_color: {e}"))?;
+            offset += consumed;
+        }
+    }
+    let (width, consumed) = decode_varint_u64(payload, offset)?;
+    offset += consumed;
+    let (height, _) = decode_varint_u64(payload, offset)?;
+    let width = u16::try_from(width).map_err(|e| e.to_string())?;
+    let height = u16::try_from(height).map_err(|e| e.to_string())?;
+    if cells != usize::from(width) * usize::from(height) {
+        return Err(format!(
+            "cell count {cells} does not match {width}x{height}; cell layout mismatch"
+        ));
+    }
+    Ok(PaneSurfaceShape {
+        width,
+        height,
+        cells,
+    })
 }
 
 fn encode_varint_u16(v: u16) -> Vec<u8> {
@@ -290,13 +399,45 @@ pub fn client_handshake(
     decode_welcome(&response)
 }
 
+/// What the server negotiated in its endpoint welcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointHandshake {
+    pub generation: u32,
+    pub error: Option<String>,
+    /// Surface codec the welcome selected (`None` if the welcome omitted it).
+    pub surface_codec: Option<String>,
+}
+
+/// Performs the stable endpoint handshake the way the real client shell does,
+/// offering the surface codecs it speaks, most capable first.
 pub fn client_shell_handshake(
     stream: &mut UnixStream,
     endpoint_generation: u32,
     surface_cols: u16,
     surface_rows: u16,
 ) -> Result<(u32, Option<String>), String> {
-    let data = serde_json::json!({
+    client_shell_handshake_with_options(
+        stream,
+        endpoint_generation,
+        surface_cols,
+        surface_rows,
+        &[],
+        &[SURFACE_CODEC_V2, SURFACE_CODEC_V1],
+    )
+    .map(|handshake| (handshake.generation, handshake.error))
+}
+
+/// Performs the endpoint handshake with explicit hello capabilities and surface
+/// codec preferences. `&[SURFACE_CODEC_V1]` reproduces a stock 0.9.0 client.
+pub fn client_shell_handshake_with_options(
+    stream: &mut UnixStream,
+    endpoint_generation: u32,
+    surface_cols: u16,
+    surface_rows: u16,
+    capabilities: &[&str],
+    surface_codecs: &[&str],
+) -> Result<EndpointHandshake, String> {
+    let mut hello = serde_json::json!({
         "generation": endpoint_generation,
         "cell_width_px": 8,
         "cell_height_px": 16,
@@ -306,11 +447,14 @@ pub fn client_shell_handshake(
         "endpoint_keybindings": false,
         "mouse_capture": false,
         "snapshot_codecs": ["shell.snapshot.v1"],
-        "surface_codecs": ["shell.surface.v1"],
+        "surface_codecs": surface_codecs,
         "input_codecs": ["shell.input.semantic.v1"],
         "blob_codecs": ["shell.blob.v1"]
-    })
-    .to_string();
+    });
+    if !capabilities.is_empty() {
+        hello["capabilities"] = serde_json::json!(capabilities);
+    }
+    let data = hello.to_string();
     let hello_payload = encode_varint_enum(
         CLIENT_MESSAGE_ENDPOINT_CONTROL,
         &[&encode_string("endpoint.hello.v1"), &encode_string(&data)],
@@ -339,7 +483,12 @@ pub fn client_shell_handshake(
         .and_then(|error| error.get("message"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
-    Ok((generation, error))
+    let surface_codec = value["surface_codec"].as_str().map(str::to_owned);
+    Ok(EndpointHandshake {
+        generation,
+        error,
+        surface_codec,
+    })
 }
 
 pub fn read_server_message(stream: &mut UnixStream) -> Result<(u32, Vec<u8>), String> {
@@ -479,8 +628,12 @@ pub fn wait_for_client_shell_bootstrap(
                     saw_snapshot = true;
                 }
             }
-            Ok((SERVER_MESSAGE_PANE_SURFACE, _)) if saw_snapshot => return Ok(()),
-            Ok((SERVER_MESSAGE_PANE_SURFACE, _)) => {
+            Ok((SERVER_MESSAGE_PANE_SURFACE | SERVER_MESSAGE_PANE_SURFACE_V2, _))
+                if saw_snapshot =>
+            {
+                return Ok(())
+            }
+            Ok((SERVER_MESSAGE_PANE_SURFACE | SERVER_MESSAGE_PANE_SURFACE_V2, _)) => {
                 return Err("client shell pane surface arrived before its snapshot".into());
             }
             Ok(_) | Err(_) => {}

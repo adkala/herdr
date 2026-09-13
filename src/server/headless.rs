@@ -1946,6 +1946,7 @@ impl HeadlessServer {
                 endpoint_keybindings,
                 mouse_capture,
                 surface_active,
+                negotiated,
                 writer,
             } => {
                 if self.handoff_in_progress {
@@ -1991,6 +1992,7 @@ impl HeadlessServer {
                 connection.shell_uses_endpoint_keybindings = endpoint_keybindings;
                 connection.shell_mouse_capture = mouse_capture;
                 connection.shell_surface_active = surface_active;
+                connection.shell_negotiated = negotiated;
                 connection.shell_projection_revision = 1;
                 let config_diagnostic = if endpoint_keybindings {
                     self.server_config_diagnostic.as_deref()

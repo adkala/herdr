@@ -129,10 +129,21 @@ impl ClientShellLocation {
     }
 }
 
+/// Optional endpoint features a client-owned shell negotiated in its hello.
+/// Everything here defaults to the generation-1 baseline so a hello that
+/// predates a feature behaves exactly like one that declined it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ClientShellNegotiated {
+    /// Pane surface codec the hello negotiated; v1 is the generation-1 floor.
+    pub(crate) surface_codec: crate::protocol::endpoint::SurfaceCodec,
+}
+
 /// A connected client tracked by the server.
 pub(crate) struct ClientConnection {
     /// Whether this connection owns the Herdr shell or one direct terminal stream.
     pub(crate) mode: ClientConnectionMode,
+    /// Optional features negotiated by a client-owned shell's hello.
+    pub(crate) shell_negotiated: ClientShellNegotiated,
     /// The client's terminal size after clamping.
     pub(crate) terminal_size: (u16, u16),
     /// Pixel size of one client terminal cell.
@@ -222,6 +233,7 @@ impl ClientConnection {
     ) -> Self {
         Self {
             mode,
+            shell_negotiated: ClientShellNegotiated::default(),
             terminal_size,
             cell_size,
             last_activity,

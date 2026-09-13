@@ -476,13 +476,21 @@ impl HeadlessServer {
             };
             // The published row patch cannot carry images. Reuse the retained text/layout
             // in a graphics-capable surface message rather than invoking the full renderer.
+            let surface_codec = client.shell_negotiated.surface_codec;
             let (prepared, graphics_delivery) = if let Some((surface, delivery)) = graphics {
                 (
-                    client.render_state.prepare_pane_surface(surface),
+                    client
+                        .render_state
+                        .prepare_pane_surface(surface, surface_codec),
                     Some(delivery),
                 )
             } else {
-                (client.render_state.prepare_pane_surface_patch(patch), None)
+                (
+                    client
+                        .render_state
+                        .prepare_pane_surface_patch(patch, surface_codec),
+                    None,
+                )
             };
             let Some(prepared) = prepared else {
                 client.defer_full_render();
@@ -558,6 +566,7 @@ mod tests {
             modifier: 0,
             skip: false,
             hyperlink: None,
+            underline_color: 0,
         }
     }
 

@@ -1061,6 +1061,7 @@ fn retained_surface_patch_updates_only_pane_cells_without_recomposing_chrome() {
                     modifier: 0,
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 };
                 4
             ],
@@ -1169,6 +1170,7 @@ fn retained_surface_patch_updates_scrollbar_cells_and_pane_hit_metadata() {
                 modifier: 0,
                 skip: false,
                 hyperlink: None,
+                underline_color: 0,
             }],
         }],
         panes: vec![updated_pane],

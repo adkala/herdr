@@ -4,10 +4,11 @@ use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
 use ratatui::layout::{Position, Rect, Size};
 
 use crate::app::state::AppState;
+use crate::protocol::endpoint::SurfaceCodec;
 use crate::protocol::render_ansi::{BlitEncoder, EncodedBlit};
 use crate::protocol::{
-    CursorState, FrameData, PaneSurfaceFrame, PaneSurfacePatch, RenderEncoding, ServerMessage,
-    TerminalFrame,
+    CursorState, FrameData, PaneSurfaceFrame, PaneSurfaceFrameV1, PaneSurfacePatch,
+    PaneSurfacePatchV1, RenderEncoding, ServerMessage, TerminalFrame,
 };
 use crate::terminal::TerminalRuntimeRegistry;
 
@@ -111,9 +112,17 @@ impl ClientRenderState {
         }
     }
 
+    /// Prepares one complete surface for a client that negotiated `codec`.
+    ///
+    /// The retained baseline always keeps the full internal surface so later
+    /// patches diff against exact cell state; only the wire message differs by
+    /// codec. Legacy `shell.surface.v1` clients get an encode-time projection,
+    /// which is the one extra per-frame allocation on this per-client path, and
+    /// it is paid only for those clients.
     pub(crate) fn prepare_pane_surface(
         &mut self,
         mut surface: PaneSurfaceFrame,
+        codec: SurfaceCodec,
     ) -> Option<PreparedRender> {
         let Self::Semantic {
             last_surface,
@@ -136,10 +145,22 @@ impl ClientRenderState {
             return None;
         }
         surface.surface_revision = surface_revision.saturating_add(1);
-        let mut committed_surface = surface.clone();
-        committed_surface.graphics.assets.clear();
+        let (message, committed_surface) = match codec {
+            SurfaceCodec::V2 => {
+                let mut committed_surface = surface.clone();
+                committed_surface.graphics.assets.clear();
+                (ServerMessage::PaneSurfaceV2(surface), committed_surface)
+            }
+            SurfaceCodec::V1 => {
+                // The projection is the client's copy; the original (minus the
+                // one-shot asset payload) becomes the baseline without a second clone.
+                let message = ServerMessage::PaneSurface(PaneSurfaceFrameV1::from(&surface));
+                surface.graphics.assets.clear();
+                (message, surface)
+            }
+        };
         Some(PreparedRender::Semantic {
-            message: ServerMessage::PaneSurface(surface),
+            message,
             committed_surface: Box::new(committed_surface),
         })
     }
@@ -147,6 +168,7 @@ impl ClientRenderState {
     pub(crate) fn prepare_pane_surface_patch(
         &self,
         mut patch: PaneSurfacePatch,
+        codec: SurfaceCodec,
     ) -> Option<PreparedRender> {
         let Self::Semantic {
             last_surface,
@@ -164,8 +186,15 @@ impl ClientRenderState {
         }
         let next_revision = surface_revision.saturating_add(1);
         patch.surface_revision = next_revision;
-        Some(PreparedRender::SemanticPatch {
-            message: ServerMessage::PaneSurfacePatch(patch),
+        Some(match codec {
+            SurfaceCodec::V2 => PreparedRender::SemanticPatch {
+                message: ServerMessage::PaneSurfacePatchV2(patch),
+                legacy_patch: None,
+            },
+            SurfaceCodec::V1 => PreparedRender::SemanticPatch {
+                message: ServerMessage::PaneSurfacePatch(PaneSurfacePatchV1::from(&patch)),
+                legacy_patch: Some(patch),
+            },
         })
     }
 
@@ -189,9 +218,15 @@ impl ClientRenderState {
                     surface_revision,
                 },
                 PreparedRender::SemanticPatch {
-                    message: ServerMessage::PaneSurfacePatch(patch),
+                    message,
+                    legacy_patch,
                 },
             ) => {
+                let patch = match (message, legacy_patch) {
+                    (ServerMessage::PaneSurfacePatchV2(patch), _) => patch,
+                    (_, Some(patch)) => patch,
+                    _ => return,
+                };
                 let surface = last_surface
                     .as_deref_mut()
                     .expect("prepared patch baseline");
@@ -261,6 +296,9 @@ pub(crate) enum PreparedRender {
     },
     SemanticPatch {
         message: ServerMessage,
+        /// Internal patch to commit when `message` carries the v1 projection;
+        /// `None` when the message itself is the internal `PaneSurfacePatchV2`.
+        legacy_patch: Option<PaneSurfacePatch>,
     },
     TerminalAnsi {
         message: ServerMessage,
@@ -273,23 +311,27 @@ impl PreparedRender {
     pub(crate) fn message(&self) -> &ServerMessage {
         match self {
             Self::Semantic { message, .. }
-            | Self::SemanticPatch { message }
+            | Self::SemanticPatch { message, .. }
             | Self::TerminalAnsi { message, .. } => message,
         }
     }
 
     pub(crate) fn strip_pane_surface_assets(&mut self) -> bool {
-        let Self::Semantic {
-            message: ServerMessage::PaneSurface(surface),
-            ..
-        } = self
-        else {
-            return false;
+        let assets = match self {
+            Self::Semantic {
+                message: ServerMessage::PaneSurface(surface),
+                ..
+            } => &mut surface.graphics.assets,
+            Self::Semantic {
+                message: ServerMessage::PaneSurfaceV2(surface),
+                ..
+            } => &mut surface.graphics.assets,
+            _ => return false,
         };
-        if surface.graphics.assets.is_empty() {
+        if assets.is_empty() {
             return false;
         }
-        surface.graphics.assets.clear();
+        assets.clear();
         true
     }
 }
@@ -489,36 +531,157 @@ mod tests {
         }
     }
 
+    fn underlined_surface(underline_color: ratatui::style::Color) -> PaneSurfaceFrame {
+        let mut surface = popup_surface("popup");
+        surface.popup = None;
+        surface.frame.cells[0].underline_color = crate::protocol::color_to_u32(underline_color);
+        surface
+    }
+
+    fn encoded(message: &ServerMessage) -> Vec<u8> {
+        bincode::serde::encode_to_vec(message, bincode::config::standard()).unwrap()
+    }
+
     #[test]
     fn popup_only_surface_changes_are_not_deduplicated() {
-        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
-        let prepared = state
-            .prepare_pane_surface(popup_surface("first"))
-            .expect("initial surface");
-        state.commit_sent_frame(prepared);
+        for codec in SurfaceCodec::SUPPORTED {
+            let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+            let prepared = state
+                .prepare_pane_surface(popup_surface("first"), codec)
+                .expect("initial surface");
+            state.commit_sent_frame(prepared);
 
-        assert!(state
-            .prepare_pane_surface(popup_surface("second"))
-            .is_some());
+            assert!(state
+                .prepare_pane_surface(popup_surface("second"), codec)
+                .is_some());
+        }
     }
 
     #[test]
     fn forced_full_surface_keeps_the_connection_revision_monotonic() {
         let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
         let prepared = state
-            .prepare_pane_surface(popup_surface("first"))
+            .prepare_pane_surface(popup_surface("first"), SurfaceCodec::V2)
             .expect("initial surface");
         state.commit_sent_frame(prepared);
         state.request_repaint();
 
         let prepared = state
-            .prepare_pane_surface(popup_surface("replacement"))
+            .prepare_pane_surface(popup_surface("replacement"), SurfaceCodec::V2)
             .expect("forced replacement surface");
         assert!(matches!(
             prepared.message(),
-            ServerMessage::PaneSurface(surface) if surface.surface_revision == 2
+            ServerMessage::PaneSurfaceV2(surface) if surface.surface_revision == 2
         ));
         state.commit_sent_frame(prepared);
         assert_eq!(state.last_pane_surface().unwrap().surface_revision, 2);
+    }
+
+    #[test]
+    fn v2_clients_receive_the_internal_surface_with_underline_colors() {
+        let red = ratatui::style::Color::Rgb(255, 0, 0);
+        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let prepared = state
+            .prepare_pane_surface(underlined_surface(red), SurfaceCodec::V2)
+            .expect("initial surface");
+        match prepared.message() {
+            ServerMessage::PaneSurfaceV2(surface) => assert_eq!(
+                surface.frame.cells[0].underline_color,
+                crate::protocol::color_to_u32(red)
+            ),
+            other => panic!("expected v2 surface, got {other:?}"),
+        }
+        state.commit_sent_frame(prepared);
+        assert_eq!(
+            state.last_pane_surface().unwrap().frame.cells[0].underline_color,
+            crate::protocol::color_to_u32(red)
+        );
+    }
+
+    #[test]
+    fn v1_clients_receive_a_projection_and_keep_a_full_baseline() {
+        let red = ratatui::style::Color::Rgb(255, 0, 0);
+        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let prepared = state
+            .prepare_pane_surface(underlined_surface(red), SurfaceCodec::V1)
+            .expect("initial surface");
+        assert!(matches!(
+            prepared.message(),
+            ServerMessage::PaneSurface(surface) if surface.surface_revision == 1
+        ));
+
+        // Byte-identical to a frame that never had underline colors.
+        let mut plain_state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let plain = plain_state
+            .prepare_pane_surface(
+                underlined_surface(ratatui::style::Color::Reset),
+                SurfaceCodec::V1,
+            )
+            .expect("plain surface");
+        assert_eq!(encoded(prepared.message()), encoded(plain.message()));
+
+        // The baseline keeps the internal representation for later diffs.
+        state.commit_sent_frame(prepared);
+        assert_eq!(
+            state.last_pane_surface().unwrap().frame.cells[0].underline_color,
+            crate::protocol::color_to_u32(red)
+        );
+    }
+
+    #[test]
+    fn patches_follow_the_negotiated_codec_and_commit_the_internal_rows() {
+        let red = ratatui::style::Color::Rgb(255, 0, 0);
+        for codec in SurfaceCodec::SUPPORTED {
+            let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+            let mut surface = underlined_surface(ratatui::style::Color::Reset);
+            surface.projection_revision = 7;
+            let prepared = state
+                .prepare_pane_surface(surface, codec)
+                .expect("initial surface");
+            state.commit_sent_frame(prepared);
+
+            let mut patched = popup_surface("popup").frame.cells[0].clone();
+            patched.symbol = "Z".into();
+            patched.underline_color = crate::protocol::color_to_u32(red);
+            let patch = PaneSurfacePatch {
+                boot_id: "boot-1".into(),
+                projection_revision: 7,
+                base_surface_revision: 1,
+                surface_revision: 0,
+                rows: vec![crate::protocol::PaneSurfacePatchRow {
+                    x: 0,
+                    y: 0,
+                    cells: vec![patched],
+                }],
+                panes: Vec::new(),
+                cursor: None,
+            };
+            let prepared = state
+                .prepare_pane_surface_patch(patch, codec)
+                .expect("patch against the committed baseline");
+            match (codec, prepared.message()) {
+                (SurfaceCodec::V2, ServerMessage::PaneSurfacePatchV2(patch)) => {
+                    assert_eq!(patch.surface_revision, 2);
+                    assert_eq!(
+                        patch.rows[0].cells[0].underline_color,
+                        crate::protocol::color_to_u32(red)
+                    );
+                }
+                (SurfaceCodec::V1, ServerMessage::PaneSurfacePatch(patch)) => {
+                    assert_eq!(patch.surface_revision, 2);
+                    assert_eq!(patch.rows[0].cells[0].symbol, "Z");
+                }
+                (codec, other) => panic!("unexpected {codec:?} patch message {other:?}"),
+            }
+            state.commit_sent_frame(prepared);
+            let baseline = state.last_pane_surface().unwrap();
+            assert_eq!(baseline.surface_revision, 2);
+            assert_eq!(baseline.frame.cells[0].symbol, "Z");
+            assert_eq!(
+                baseline.frame.cells[0].underline_color,
+                crate::protocol::color_to_u32(red),
+                "{codec:?} baseline must commit the internal patch"
+            );
+        }
     }
 }

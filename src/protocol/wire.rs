@@ -12,6 +12,8 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
+use super::{PaneSurfaceFrameV1, PaneSurfacePatchV1};
+
 // ---------------------------------------------------------------------------
 // Protocol constants
 // ---------------------------------------------------------------------------
@@ -713,6 +715,10 @@ pub struct CellData {
     pub skip: bool,
     /// Index into `FrameData::hyperlinks` for this cell's OSC 8 target, if any.
     pub hyperlink: Option<u32>,
+    /// Underline color (SGR 58) packed like `fg`; `Reset` (0) means the
+    /// underline takes the foreground color, as SGR 59 would. Carried by
+    /// `shell.surface.v2`; the frozen v1 mirror `CellDataV1` omits it.
+    pub underline_color: u32,
 }
 
 impl CellData {
@@ -724,6 +730,7 @@ impl CellData {
             modifier: modifier_to_u16(cell.modifier),
             skip: cell.skip,
             hyperlink: None,
+            underline_color: color_to_u32(cell.underline_color),
         }
     }
 }
@@ -875,6 +882,7 @@ impl FrameData {
                 cell.fg = u32_to_color(cell_data.fg);
                 cell.bg = u32_to_color(cell_data.bg);
                 cell.modifier = u16_to_modifier(cell_data.modifier);
+                cell.underline_color = u32_to_color(cell_data.underline_color);
                 cell.skip = cell_data.skip;
             }
         }
@@ -1411,7 +1419,10 @@ pub enum ServerMessage {
     ClientShellSnapshot(Box<ClientShellSnapshot>),
 
     /// Active-tab pane content rendered at a client-requested origin-relative size.
-    PaneSurface(PaneSurfaceFrame),
+    ///
+    /// Frozen `shell.surface.v1` payload (tag 13). Clients that negotiated
+    /// `shell.surface.v2` receive `PaneSurfaceV2` instead.
+    PaneSurface(PaneSurfaceFrameV1),
 
     /// Ephemeral semantic notification delivered over the private control lane.
     /// It is sent only to currently connected client-rendered shells.
@@ -1439,13 +1450,29 @@ pub enum ServerMessage {
     },
 
     /// Incremental terminal-cell update for a previously committed pane surface.
-    PaneSurfacePatch(PaneSurfacePatch),
+    ///
+    /// Frozen `shell.surface.v1` payload (tag 19). Clients that negotiated
+    /// `shell.surface.v2` receive `PaneSurfacePatchV2` instead.
+    PaneSurfacePatch(PaneSurfacePatchV1),
 
     /// Extensible named control message for the stable client-owned endpoint protocol.
     ///
     /// This variant is append-only. Its bincode tag and two-string payload are part
     /// of endpoint generation 1 and must not change.
     EndpointControl { kind: String, data: String },
+
+    /// `shell.surface.v2` complete surface: `PaneSurface` plus a per-cell SGR 58
+    /// underline color (tag 21).
+    ///
+    /// Appending after `EndpointControl` is safe for generation 1 because this
+    /// tag is only ever sent to a shell whose hello negotiated
+    /// `shell.surface.v2`; a v1 client never observes it. It is itself
+    /// append-closed: a further change needs `shell.surface.v3`.
+    PaneSurfaceV2(PaneSurfaceFrame),
+
+    /// `shell.surface.v2` incremental update (tag 22); same negotiation rule as
+    /// `PaneSurfaceV2`.
+    PaneSurfacePatchV2(PaneSurfacePatch),
 }
 
 // ---------------------------------------------------------------------------
@@ -2384,6 +2411,7 @@ mod tests {
                     modifier: Modifier::BOLD.bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "i".into(),
@@ -2392,6 +2420,7 @@ mod tests {
                     modifier: Modifier::ITALIC.bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "!".into(),
@@ -2400,6 +2429,7 @@ mod tests {
                     modifier: (Modifier::BOLD | Modifier::UNDERLINED).bits(),
                     skip: false,
                     hyperlink: Some(0),
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: " ".into(),
@@ -2408,6 +2438,7 @@ mod tests {
                     modifier: Modifier::empty().bits(),
                     skip: true,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "→".into(), // multi-byte grapheme
@@ -2416,6 +2447,7 @@ mod tests {
                     modifier: Modifier::REVERSED.bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "🦀".into(), // emoji, wide grapheme cluster
@@ -2424,6 +2456,7 @@ mod tests {
                     modifier: Modifier::empty().bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
             ],
             width: 3,
@@ -2437,7 +2470,7 @@ mod tests {
             hyperlinks: vec!["https://example.com".to_owned()],
             graphics: Vec::new(),
         };
-        let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
+        let surface = PaneSurfaceFrame {
             boot_id: "boot-1".into(),
             projection_revision: 1,
             surface_revision: 1,
@@ -2446,7 +2479,8 @@ mod tests {
             splits: Vec::new(),
             popup: None,
             graphics: SurfaceGraphicsScene::default(),
-        });
+        };
+        let msg = ServerMessage::PaneSurface(PaneSurfaceFrameV1::from(&surface));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
@@ -2469,7 +2503,7 @@ mod tests {
 
     #[test]
     fn pane_surface_patch_roundtrip() {
-        let msg = ServerMessage::PaneSurfacePatch(PaneSurfacePatch {
+        let patch = PaneSurfacePatch {
             boot_id: "boot-1".into(),
             projection_revision: 3,
             base_surface_revision: 7,
@@ -2484,6 +2518,7 @@ mod tests {
                     modifier: 3,
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 }],
             }],
             panes: Vec::new(),
@@ -2493,7 +2528,8 @@ mod tests {
                 visible: true,
                 shape: 2,
             }),
-        });
+        };
+        let msg = ServerMessage::PaneSurfacePatch(PaneSurfacePatchV1::from(&patch));
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
@@ -2502,6 +2538,112 @@ mod tests {
             encoded_sha256(&msg),
             "0814b99a1dc6eaf7918424aa416c066509cbfb73b72344a809c27cde78cb6dbd"
         );
+    }
+
+    #[test]
+    fn v2_surface_messages_carry_underline_colors_and_project_to_frozen_v1_bytes() {
+        // `shell.surface.v2` is append-closed like v1; these digests pin it.
+        let mut surface = PaneSurfaceFrame {
+            boot_id: "boot-1".into(),
+            projection_revision: 2,
+            surface_revision: 3,
+            frame: FrameData {
+                cells: vec![
+                    CellData {
+                        symbol: "u".into(),
+                        fg: color_to_u32(Color::White),
+                        bg: color_to_u32(Color::Reset),
+                        modifier: Modifier::UNDERLINED.bits(),
+                        skip: false,
+                        hyperlink: None,
+                        underline_color: color_to_u32(Color::Rgb(255, 0, 0)),
+                    },
+                    CellData {
+                        symbol: "n".into(),
+                        fg: color_to_u32(Color::Reset),
+                        bg: color_to_u32(Color::Reset),
+                        modifier: 0,
+                        skip: false,
+                        hyperlink: None,
+                        underline_color: color_to_u32(Color::Indexed(4)),
+                    },
+                ],
+                width: 2,
+                height: 1,
+                cursor: None,
+                hyperlinks: Vec::new(),
+                graphics: Vec::new(),
+            },
+            panes: Vec::new(),
+            splits: Vec::new(),
+            popup: None,
+            graphics: SurfaceGraphicsScene::default(),
+        };
+        let patch = PaneSurfacePatch {
+            boot_id: "boot-1".into(),
+            projection_revision: 2,
+            base_surface_revision: 3,
+            surface_revision: 4,
+            rows: vec![PaneSurfacePatchRow {
+                x: 1,
+                y: 0,
+                cells: vec![surface.frame.cells[0].clone()],
+            }],
+            panes: Vec::new(),
+            cursor: None,
+        };
+
+        let v2 = ServerMessage::PaneSurfaceV2(surface.clone());
+        let encoded = bincode::serde::encode_to_vec(&v2, bincode::config::standard()).unwrap();
+        let (decoded, _): (ServerMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(decoded, v2);
+        let v2_patch = ServerMessage::PaneSurfacePatchV2(patch.clone());
+        let encoded =
+            bincode::serde::encode_to_vec(&v2_patch, bincode::config::standard()).unwrap();
+        let (decoded, _): (ServerMessage, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        assert_eq!(decoded, v2_patch);
+        assert_eq!(
+            (encoded_sha256(&v2), encoded_sha256(&v2_patch)),
+            (
+                "c1039f02f887e384a5a04a63e7e233c284e45c207078eca288d3bea91ff07d2b".to_owned(),
+                "13915b371c4a0be54d34aa0b5195f47fd775b4c4bfe7455fa65edccd48d192c4".to_owned(),
+            )
+        );
+
+        // A v1 client gets exactly the bytes a server without underline colors sent.
+        let projected = ServerMessage::PaneSurface(PaneSurfaceFrameV1::from(&surface));
+        let projected_patch = ServerMessage::PaneSurfacePatch(PaneSurfacePatchV1::from(&patch));
+        let mut plain_patch = patch.clone();
+        for cell in &mut surface.frame.cells {
+            cell.underline_color = color_to_u32(Color::Reset);
+        }
+        for cell in plain_patch
+            .rows
+            .iter_mut()
+            .flat_map(|row| row.cells.iter_mut())
+        {
+            cell.underline_color = color_to_u32(Color::Reset);
+        }
+        assert_eq!(
+            encoded_sha256(&projected),
+            encoded_sha256(&ServerMessage::PaneSurface(PaneSurfaceFrameV1::from(
+                &surface
+            )))
+        );
+        assert_eq!(
+            encoded_sha256(&projected_patch),
+            encoded_sha256(&ServerMessage::PaneSurfacePatch(PaneSurfacePatchV1::from(
+                &plain_patch
+            )))
+        );
+        assert_ne!(encoded_sha256(&projected), encoded_sha256(&v2));
+        // Legacy clients widen back to the reset underline color.
+        let ServerMessage::PaneSurface(legacy) = projected else {
+            unreachable!()
+        };
+        assert_eq!(PaneSurfaceFrame::from(legacy), surface);
     }
 
     #[test]
@@ -2519,7 +2661,7 @@ mod tests {
             data_len: 8,
             data_fingerprint: 42,
         };
-        let message = ServerMessage::PaneSurface(PaneSurfaceFrame {
+        let surface = PaneSurfaceFrame {
             boot_id: "boot-1".into(),
             projection_revision: 2,
             surface_revision: 3,
@@ -2557,7 +2699,8 @@ mod tests {
                 }],
                 retained_assets: Vec::new(),
             },
-        });
+        };
+        let message = ServerMessage::PaneSurface(PaneSurfaceFrameV1::from(&surface));
 
         assert_eq!(
             encoded_sha256(&message),
@@ -2615,7 +2758,12 @@ mod tests {
             popup: None,
             graphics: SurfaceGraphicsScene::default(),
         };
-        assert_eq!(tag(&ServerMessage::PaneSurface(empty_frame())), 13);
+        assert_eq!(
+            tag(&ServerMessage::PaneSurface(PaneSurfaceFrameV1::from(
+                &empty_frame()
+            ))),
+            13
+        );
         assert_eq!(
             tag(&ServerMessage::ClientShellError {
                 message: String::new(),
@@ -2635,16 +2783,19 @@ mod tests {
             }),
             18
         );
+        let empty_patch = || PaneSurfacePatch {
+            boot_id: String::new(),
+            projection_revision: 0,
+            base_surface_revision: 0,
+            surface_revision: 0,
+            rows: Vec::new(),
+            panes: Vec::new(),
+            cursor: None,
+        };
         assert_eq!(
-            tag(&ServerMessage::PaneSurfacePatch(PaneSurfacePatch {
-                boot_id: String::new(),
-                projection_revision: 0,
-                base_surface_revision: 0,
-                surface_revision: 0,
-                rows: Vec::new(),
-                panes: Vec::new(),
-                cursor: None,
-            })),
+            tag(&ServerMessage::PaneSurfacePatch(PaneSurfacePatchV1::from(
+                &empty_patch()
+            ))),
             19
         );
         assert_eq!(
@@ -2654,6 +2805,9 @@ mod tests {
             }),
             20
         );
+        // Appended `shell.surface.v2` payloads; only sent after negotiation.
+        assert_eq!(tag(&ServerMessage::PaneSurfaceV2(empty_frame())), 21);
+        assert_eq!(tag(&ServerMessage::PaneSurfacePatchV2(empty_patch())), 22);
     }
 
     #[test]
@@ -2955,6 +3109,7 @@ mod tests {
                 modifier: ((i % 16) as u16),
                 skip: i % 100 == 0,
                 hyperlink: None,
+                underline_color: 0,
             })
             .collect();
 
@@ -2971,7 +3126,7 @@ mod tests {
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
         };
-        let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
+        let msg = ServerMessage::PaneSurfaceV2(PaneSurfaceFrame {
             boot_id: "boot-1".into(),
             projection_revision: 1,
             surface_revision: 1,
@@ -3253,6 +3408,7 @@ mod tests {
         buffer.cell_mut((2, 0)).unwrap().set_symbol("!");
         buffer.cell_mut((2, 0)).unwrap().fg = Color::Rgb(255, 128, 0);
         buffer.cell_mut((2, 0)).unwrap().bg = Color::Indexed(220);
+        buffer.cell_mut((2, 0)).unwrap().underline_color = Color::Rgb(255, 0, 0);
 
         let cursor = CursorState {
             x: 1,
@@ -3280,6 +3436,11 @@ mod tests {
         assert_eq!(frame.cells[2].symbol, "!");
         assert_eq!(frame.cells[2].fg, color_to_u32(Color::Rgb(255, 128, 0)));
         assert_eq!(frame.cells[2].bg, color_to_u32(Color::Indexed(220)));
+        assert_eq!(
+            frame.cells[2].underline_color,
+            color_to_u32(Color::Rgb(255, 0, 0))
+        );
+        assert_eq!(frame.cells[0].underline_color, color_to_u32(Color::Reset));
 
         let with_links = FrameData::from_ratatui_buffer_with_hyperlinks(
             &buffer,
@@ -3301,6 +3462,10 @@ mod tests {
         assert_eq!(restored.cell((1, 0)).unwrap().symbol(), "i");
         assert_eq!(restored.cell((2, 0)).unwrap().symbol(), "!");
         assert_eq!(restored.cell((2, 0)).unwrap().fg, Color::Rgb(255, 128, 0));
+        assert_eq!(
+            restored.cell((2, 0)).unwrap().underline_color,
+            Color::Rgb(255, 0, 0)
+        );
     }
 
     #[test]
@@ -3314,6 +3479,7 @@ mod tests {
                     modifier: 0,
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 };
                 5
             ], // 5 cells but 3×2 = 6 expected

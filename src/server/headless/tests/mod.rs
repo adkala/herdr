@@ -97,7 +97,19 @@ fn shutdown_test_runtimes(server: &mut HeadlessServer) {
     }
 }
 
+/// Decodes one framed server message the way the client does: legacy
+/// `shell.surface.v1` frames are widened into the internal `*V2` variants, so
+/// tests assert on internal types whichever codec the test client negotiated.
+/// Use `read_raw_server_message` to observe the wire variant itself.
 fn read_server_message(bytes: Vec<u8>) -> ServerMessage {
+    match read_raw_server_message(bytes) {
+        ServerMessage::PaneSurface(surface) => ServerMessage::PaneSurfaceV2(surface.into()),
+        ServerMessage::PaneSurfacePatch(patch) => ServerMessage::PaneSurfacePatchV2(patch.into()),
+        other => other,
+    }
+}
+
+fn read_raw_server_message(bytes: Vec<u8>) -> ServerMessage {
     let mut cursor = std::io::Cursor::new(bytes);
     protocol::read_message(&mut cursor, MAX_FRAME_SIZE).expect("decode server message")
 }
@@ -610,6 +622,7 @@ async fn client_shell_attach_seeds_workspace() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -640,6 +653,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -776,6 +790,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -799,7 +814,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
 
     server.render_and_stream();
     let initial_surface = match read_server_message(render_rx.recv().expect("pane surface")) {
-        ServerMessage::PaneSurface(surface) => {
+        ServerMessage::PaneSurfaceV2(surface) => {
             assert_eq!((surface.frame.width, surface.frame.height), (80, 23));
             let text = frame_text(&surface.frame);
             assert!(text.contains("CLIENT_SHELL_LIVE"), "surface: {text:?}");
@@ -837,7 +852,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let sources = std::collections::HashSet::from([pane_id]);
     assert!(server.render_retained_pane_surface_and_stream(&sources));
     match read_server_message(render_rx.recv().expect("pane surface patch")) {
-        ServerMessage::PaneSurfacePatch(patch) => {
+        ServerMessage::PaneSurfacePatchV2(patch) => {
             assert_eq!(
                 patch.base_surface_revision,
                 initial_surface.surface_revision
@@ -870,7 +885,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         .test_process_pty_bytes(b"\x1b[?1003l\x1b[?1006l\x1b[?1016l");
     assert!(server.render_retained_pane_surface_and_stream(&sources));
     match read_server_message(render_rx.recv().expect("metadata-only pane surface patch")) {
-        ServerMessage::PaneSurfacePatch(patch) => {
+        ServerMessage::PaneSurfacePatchV2(patch) => {
             assert!(patch.rows.is_empty(), "mouse modes only change metadata");
             assert_eq!(patch.panes.len(), 1);
             assert!(!patch.panes[0].mouse_reporting);
@@ -897,13 +912,98 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         .request_repaint();
     server.render_and_stream();
     let full = match read_server_message(render_rx.recv().expect("full comparison surface")) {
-        ServerMessage::PaneSurface(surface) => surface,
+        ServerMessage::PaneSurfaceV2(surface) => surface,
         other => panic!("expected full comparison surface, got {other:?}"),
     };
     assert!(full.surface_revision > retained.surface_revision);
     assert_eq!(retained.frame, full.frame);
     assert_eq!(retained.panes, full.panes);
     assert_eq!(retained.splits, full.splits);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn pane_surface_wire_variant_follows_the_negotiated_surface_codec() {
+    // The same rendered pane reaches a legacy client as the frozen v1 variant
+    // (no underline color, widened to `Reset`) and a v2 client as the appended
+    // variant that keeps the SGR 58 color.
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("underline");
+    let pane_id = workspace.focused_pane_id().expect("focused pane");
+    workspace.insert_test_runtime(
+        pane_id,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(
+            80,
+            23,
+            b"\x1b[4m\x1b[58:2::17:34:51mU\x1b[0m",
+        ),
+    );
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+
+    let (_legacy_control, legacy_render) = connect_matching_test_shell(&mut server, 7);
+    let (_current_control, current_render) = connect_matching_test_shell(&mut server, 8);
+    server
+        .clients
+        .get_mut(&8)
+        .expect("v2 client")
+        .shell_negotiated
+        .surface_codec = crate::protocol::endpoint::SurfaceCodec::V2;
+    assert_eq!(
+        server.clients[&7].shell_negotiated.surface_codec,
+        crate::protocol::endpoint::SurfaceCodec::V1,
+        "a hello without a codec preference stays on the generation-1 floor"
+    );
+
+    server.render_and_stream();
+
+    let underline = crate::protocol::color_to_u32(ratatui::style::Color::Rgb(17, 34, 51));
+    let reset = crate::protocol::color_to_u32(ratatui::style::Color::Reset);
+
+    let ServerMessage::PaneSurface(legacy) =
+        read_raw_server_message(legacy_render.recv().expect("legacy surface"))
+    else {
+        panic!("legacy client must receive the frozen PaneSurface variant");
+    };
+    assert!(
+        legacy.frame.cells.iter().any(|cell| cell.symbol == "U"),
+        "legacy surface should show the pane text"
+    );
+    let widened = crate::protocol::PaneSurfaceFrame::from(legacy);
+    let cell = widened
+        .frame
+        .cells
+        .iter()
+        .find(|cell| cell.symbol == "U")
+        .expect("underlined cell");
+    assert_eq!(cell.underline_color, reset);
+
+    let ServerMessage::PaneSurfaceV2(current) =
+        read_raw_server_message(current_render.recv().expect("v2 surface"))
+    else {
+        panic!("v2 client must receive the appended PaneSurfaceV2 variant");
+    };
+    let cell = current
+        .frame
+        .cells
+        .iter()
+        .find(|cell| cell.symbol == "U")
+        .expect("underlined cell");
+    assert_eq!(cell.underline_color, underline);
+    assert_eq!(
+        current.frame,
+        server.clients[&8]
+            .render_state
+            .last_pane_surface()
+            .unwrap()
+            .frame
+    );
+    assert_eq!(
+        widened.frame.width, current.frame.width,
+        "both codecs describe the same surface geometry"
+    );
     shutdown_test_runtimes(&mut server);
 }
 
@@ -943,6 +1043,7 @@ fn connect_test_shell(
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -981,7 +1082,7 @@ fn recv_pane_surface(
             .recv()
             .unwrap_or_else(|error| panic!("{context}: {error}")),
     ) {
-        ServerMessage::PaneSurface(surface) => surface,
+        ServerMessage::PaneSurfaceV2(surface) => surface,
         other => panic!("{context}: expected pane surface, got {other:?}"),
     }
 }
@@ -995,7 +1096,7 @@ fn recv_pane_surface_patch(
             .recv()
             .unwrap_or_else(|error| panic!("{context}: {error}")),
     ) {
-        ServerMessage::PaneSurfacePatch(patch) => patch,
+        ServerMessage::PaneSurfacePatchV2(patch) => patch,
         other => panic!("{context}: expected pane surface patch, got {other:?}"),
     }
 }
@@ -1273,7 +1374,7 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     assert!(server.render_retained_pane_surface_and_stream(&sources));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive first patch")),
-        ServerMessage::PaneSurfacePatch(_)
+        ServerMessage::PaneSurfacePatchV2(_)
     ));
 
     let slow_baseline = server.clients[&8]
@@ -1285,7 +1386,7 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     assert!(server.render_retained_pane_surface_and_stream(&sources));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive second patch")),
-        ServerMessage::PaneSurfacePatch(_)
+        ServerMessage::PaneSurfacePatchV2(_)
     ));
     assert_eq!(server.clients[&8].deferred_render(), DeferredRender::Full);
     assert_eq!(
@@ -1298,18 +1399,18 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     assert!(server.render_retained_pane_surface_and_stream(&sources));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive third patch")),
-        ServerMessage::PaneSurfacePatch(_)
+        ServerMessage::PaneSurfacePatchV2(_)
     ));
 
     assert!(matches!(
         read_server_message(slow_render.recv().expect("slow queued first patch")),
-        ServerMessage::PaneSurfacePatch(_)
+        ServerMessage::PaneSurfacePatchV2(_)
     ));
     assert!(server.handle_server_event(ServerEvent::ClientWriterDrained { client_id: 8 }));
     server.render_and_stream();
     assert!(matches!(
         read_server_message(slow_render.recv().expect("slow full recovery surface")),
-        ServerMessage::PaneSurface(_)
+        ServerMessage::PaneSurfaceV2(_)
     ));
 
     shutdown_test_runtimes(&mut server);
@@ -1343,7 +1444,7 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive retained patch")),
-        ServerMessage::PaneSurfacePatch(_)
+        ServerMessage::PaneSurfacePatchV2(_)
     ));
 
     let _ = slow_render.recv().expect("slow queued initial surface");
@@ -1351,7 +1452,7 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
     server.render_and_stream();
     assert!(matches!(
         read_server_message(slow_render.recv().expect("slow full recovery surface")),
-        ServerMessage::PaneSurface(_)
+        ServerMessage::PaneSurfaceV2(_)
     ));
 
     shutdown_test_runtimes(&mut server);
@@ -1376,6 +1477,7 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer: local_writer,
         })
     );
@@ -1400,6 +1502,7 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
             endpoint_keybindings: true,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer: endpoint_writer,
         })
     );
@@ -2038,11 +2141,11 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
 
     server.render_and_stream();
     let first_surface = match read_server_message(first_render.recv().expect("first surface")) {
-        ServerMessage::PaneSurface(surface) => surface,
+        ServerMessage::PaneSurfaceV2(surface) => surface,
         other => panic!("expected first pane surface, got {other:?}"),
     };
     let second_surface = match read_server_message(second_render.recv().expect("second surface")) {
-        ServerMessage::PaneSurface(surface) => surface,
+        ServerMessage::PaneSurfaceV2(surface) => surface,
         other => panic!("expected second pane surface, got {other:?}"),
     };
     assert!(frame_text(&first_surface.frame).contains("FIRST_TAB"));
@@ -2302,6 +2405,7 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -2336,7 +2440,7 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
         Some(second_id.as_str())
     );
     match read_server_message(render_rx.recv().expect("replacement pane surface")) {
-        ServerMessage::PaneSurface(surface) => {
+        ServerMessage::PaneSurfaceV2(surface) => {
             assert_eq!(surface.projection_revision, replacement.revision);
         }
         other => panic!("expected replacement pane surface, got {other:?}"),
@@ -2552,6 +2656,7 @@ async fn client_shell_streams_and_targets_popup_terminal_content() {
             endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
+            negotiated: Default::default(),
             writer,
         })
     );
@@ -2560,7 +2665,7 @@ async fn client_shell_streams_and_targets_popup_terminal_content() {
     ));
 
     server.render_and_stream();
-    let ServerMessage::PaneSurface(surface) =
+    let ServerMessage::PaneSurfaceV2(surface) =
         read_server_message(render_rx.recv().expect("popup surface"))
     else {
         panic!("expected pane surface");
@@ -2651,7 +2756,7 @@ async fn client_shell_streams_and_targets_popup_terminal_content() {
 
     assert!(server.app.close_popup_pane());
     server.render_and_stream();
-    let ServerMessage::PaneSurface(surface) =
+    let ServerMessage::PaneSurfaceV2(surface) =
         read_server_message(render_rx.recv().expect("popup close surface"))
     else {
         panic!("expected pane surface after popup close");

@@ -561,11 +561,11 @@ impl HeadlessServer {
                         || !graphics.retained_assets.is_empty()
                 });
             let mut next_shell_graphics_delivery = None;
+            let surface_codec = client.shell_negotiated.surface_codec;
             let prepared = if let Some((panes, splits, popup, graphics, delivery)) = surface_parts {
                 next_shell_graphics_delivery = Some(delivery);
-                client
-                    .render_state
-                    .prepare_pane_surface(protocol::PaneSurfaceFrame {
+                client.render_state.prepare_pane_surface(
+                    protocol::PaneSurfaceFrame {
                         boot_id: self.client_shell_boot_id.clone(),
                         projection_revision: shell_projection_revision,
                         surface_revision: 0,
@@ -574,7 +574,9 @@ impl HeadlessServer {
                         splits,
                         popup,
                         graphics,
-                    })
+                    },
+                    surface_codec,
+                )
             } else {
                 client.render_state.prepare_frame(frame)
             };

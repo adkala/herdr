@@ -20,7 +20,7 @@ async fn client_shell_surface_sends_complete_placements_and_each_live_asset_once
 
     server.render_and_stream();
     let first = read_server_message(receive_render(&client_rx, Duration::from_millis(100)));
-    let ServerMessage::PaneSurface(first) = first else {
+    let ServerMessage::PaneSurfaceV2(first) = first else {
         panic!("expected client shell pane surface");
     };
     assert_eq!(first.graphics.placements.len(), 1);
@@ -34,7 +34,7 @@ async fn client_shell_surface_sends_complete_placements_and_each_live_asset_once
     server.clients.get_mut(&1).unwrap().request_repaint();
     server.render_and_stream();
     let second = read_server_message(receive_render(&client_rx, Duration::from_millis(100)));
-    let ServerMessage::PaneSurface(second) = second else {
+    let ServerMessage::PaneSurfaceV2(second) = second else {
         panic!("expected replacement client shell pane surface");
     };
     assert_eq!(second.graphics.placements, first.graphics.placements);
@@ -46,7 +46,7 @@ async fn client_shell_surface_sends_complete_placements_and_each_live_asset_once
     assert!(server.set_client_shell_surface_active(1, true).is_some());
     server.render_and_stream();
     let replay = read_server_message(receive_render(&client_rx, Duration::from_millis(100)));
-    let ServerMessage::PaneSurface(replay) = replay else {
+    let ServerMessage::PaneSurfaceV2(replay) = replay else {
         panic!("expected post-commit graphics replay");
     };
     assert_eq!(replay.graphics.placements, first.graphics.placements);
@@ -74,7 +74,7 @@ async fn client_shell_asset_delivery_is_bounded_to_the_current_live_scene() {
     server.clients.get_mut(&1).unwrap().request_repaint();
     server.render_and_stream();
     let removed = read_server_message(receive_render(&client_rx, Duration::from_millis(100)));
-    let ServerMessage::PaneSurface(removed) = removed else {
+    let ServerMessage::PaneSurfaceV2(removed) = removed else {
         panic!("expected removed client shell scene");
     };
     assert!(removed.graphics.placements.is_empty());
@@ -83,7 +83,7 @@ async fn client_shell_asset_delivery_is_bounded_to_the_current_live_scene() {
     server.clients.get_mut(&1).unwrap().request_repaint();
     server.render_and_stream();
     let restored = read_server_message(receive_render(&client_rx, Duration::from_millis(100)));
-    let ServerMessage::PaneSurface(restored) = restored else {
+    let ServerMessage::PaneSurfaceV2(restored) = restored else {
         panic!("expected restored client shell scene");
     };
     assert_eq!(restored.graphics.assets.len(), 1);
@@ -102,7 +102,7 @@ async fn first_kitty_image_updates_retained_surface_without_full_redraw() {
         height_px: 20,
     };
     server.render_and_stream();
-    let ServerMessage::PaneSurface(initial) =
+    let ServerMessage::PaneSurfaceV2(initial) =
         read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
     else {
         panic!("expected text-only baseline");
@@ -115,7 +115,7 @@ async fn first_kitty_image_updates_retained_surface_without_full_redraw() {
         b"\x1b_Ga=T,f=32,t=d,i=7,p=3,s=1,v=1,c=1,r=1,q=2;/wAA/w==\x1b\\",
     );
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
-    let ServerMessage::PaneSurface(repainted) =
+    let ServerMessage::PaneSurfaceV2(repainted) =
         read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
     else {
         panic!("expected image update without a full redraw");
@@ -127,7 +127,7 @@ async fn first_kitty_image_updates_retained_surface_without_full_redraw() {
     // Text changes while an image is visible must reuse its uploaded pixels.
     write_shared_test_pane(&mut server, pane_id, b"\rupdated text");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
-    let ServerMessage::PaneSurface(text_update) =
+    let ServerMessage::PaneSurfaceV2(text_update) =
         read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
     else {
         panic!("expected retained text and image scene");
@@ -141,7 +141,7 @@ async fn first_kitty_image_updates_retained_surface_without_full_redraw() {
 
     write_shared_test_pane(&mut server, pane_id, b"\x1b_Ga=d,d=A\x1b\\");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
-    let ServerMessage::PaneSurface(deleted) =
+    let ServerMessage::PaneSurfaceV2(deleted) =
         read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
     else {
         panic!("expected image removal");
@@ -153,7 +153,7 @@ async fn first_kitty_image_updates_retained_surface_without_full_redraw() {
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
     assert!(matches!(
         read_server_message(receive_render(&client_rx, Duration::from_millis(100))),
-        ServerMessage::PaneSurfacePatch(_)
+        ServerMessage::PaneSurfacePatchV2(_)
     ));
 
     // A full output queue must not mark unsent pixels as delivered.
@@ -173,7 +173,7 @@ async fn first_kitty_image_updates_retained_surface_without_full_redraw() {
         .is_empty());
     let _ = receive_render(&client_rx, Duration::from_millis(100));
     server.render_and_stream();
-    let ServerMessage::PaneSurface(recovered) =
+    let ServerMessage::PaneSurfaceV2(recovered) =
         read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
     else {
         panic!("expected deferred graphics recovery");
@@ -203,7 +203,7 @@ async fn retained_unicode_image_arrives_after_fragmented_upload_without_reupload
         write_shared_test_pane(&mut server, pane_id, bytes);
         assert!(server.render_retained_pane_surface_and_stream(&sources));
         for frame in client_rx.try_iter() {
-            if let ServerMessage::PaneSurface(surface) = read_server_message(frame) {
+            if let ServerMessage::PaneSurfaceV2(surface) = read_server_message(frame) {
                 assert!(surface.graphics.placements.is_empty());
             }
         }
@@ -214,7 +214,7 @@ async fn retained_unicode_image_arrives_after_fragmented_upload_without_reupload
         "\x1b[2;3H\x1b[38;2;18;52;86m\u{10eeee}\u{0305}\u{0305}\x1b[0m".as_bytes(),
     );
     assert!(server.render_retained_pane_surface_and_stream(&sources));
-    let ServerMessage::PaneSurface(surface) =
+    let ServerMessage::PaneSurfaceV2(surface) =
         read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
     else {
         panic!("virtual image must arrive without a tab switch");
@@ -229,7 +229,7 @@ async fn retained_unicode_image_arrives_after_fragmented_upload_without_reupload
         b"\x1b_Ga=t,f=32,t=d,i=1193046,s=1,v=1,q=2;AP8A/w==\x1b\\",
     );
     assert!(server.render_retained_pane_surface_and_stream(&sources));
-    let ServerMessage::PaneSurface(removed) =
+    let ServerMessage::PaneSurfaceV2(removed) =
         read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
     else {
         panic!("retransmission must remove the virtual placement");
@@ -241,7 +241,7 @@ async fn retained_unicode_image_arrives_after_fragmented_upload_without_reupload
         b"\x1b_Ga=p,U=1,i=1193046,c=1,r=1,q=2\x1b\\",
     );
     assert!(server.render_retained_pane_surface_and_stream(&sources));
-    let ServerMessage::PaneSurface(replaced) =
+    let ServerMessage::PaneSurfaceV2(replaced) =
         read_server_message(receive_render(&client_rx, Duration::from_millis(100)))
     else {
         panic!("updated image pixels must arrive");
@@ -315,7 +315,7 @@ async fn render_scale_profile_retained_graphics() {
                     }
                     let elapsed = started.elapsed();
                     for frame in client_rx.try_iter() {
-                        if let ServerMessage::PaneSurface(surface) = read_server_message(frame) {
+                        if let ServerMessage::PaneSurfaceV2(surface) = read_server_message(frame) {
                             assert!(surface.graphics.assets.is_empty());
                         }
                     }
@@ -349,7 +349,7 @@ async fn client_shell_surface_projects_terminal_kitty_images_from_authoritative_
 
     server.render_and_stream();
     let message = read_server_message(receive_render(&client_rx, Duration::from_millis(100)));
-    let ServerMessage::PaneSurface(surface) = message else {
+    let ServerMessage::PaneSurfaceV2(surface) = message else {
         panic!("expected client shell pane surface");
     };
     assert_eq!(surface.graphics.placements.len(), 1);
@@ -380,7 +380,7 @@ async fn client_shell_delivers_equal_pixels_for_distinct_terminal_image_ids() {
 
     server.render_and_stream();
     let message = read_server_message(receive_render(&client_rx, Duration::from_millis(100)));
-    let ServerMessage::PaneSurface(surface) = message else {
+    let ServerMessage::PaneSurfaceV2(surface) = message else {
         panic!("expected client shell pane surface");
     };
     assert_eq!(surface.graphics.placements.len(), 2);
@@ -397,7 +397,7 @@ async fn client_shell_delivers_equal_pixels_for_distinct_terminal_image_ids() {
     server.clients.get_mut(&1).unwrap().request_repaint();
     server.render_and_stream();
     let message = read_server_message(receive_render(&client_rx, Duration::from_millis(100)));
-    let ServerMessage::PaneSurface(surface) = message else {
+    let ServerMessage::PaneSurfaceV2(surface) = message else {
         panic!("expected replacement client shell pane surface");
     };
     assert_eq!(surface.graphics.placements.len(), 2);
@@ -422,7 +422,7 @@ async fn full_client_shell_render_lane_does_not_commit_graphics_delivery() {
     let _older = receive_render(&client_rx, Duration::from_millis(100));
     server.render_and_stream();
     let message = read_server_message(receive_render(&client_rx, Duration::from_millis(100)));
-    let ServerMessage::PaneSurface(surface) = message else {
+    let ServerMessage::PaneSurfaceV2(surface) = message else {
         panic!("expected client shell pane surface");
     };
     assert_eq!(surface.graphics.assets.len(), 1);
@@ -1115,7 +1115,7 @@ async fn client_shell_direct_graphics_uploads_without_server_authored_coordinate
             .recv_timeout(Duration::from_secs(1))
             .expect("resident client shell scene"),
     );
-    let ServerMessage::PaneSurface(surface) = surface else {
+    let ServerMessage::PaneSurfaceV2(surface) = surface else {
         panic!("expected client shell pane surface");
     };
     assert_eq!(surface.graphics.placements.len(), 1);
@@ -1128,7 +1128,7 @@ async fn client_shell_direct_graphics_uploads_without_server_authored_coordinate
             .recv_timeout(Duration::from_secs(1))
             .expect("non-owning client shell scene"),
     );
-    let ServerMessage::PaneSurface(background_surface) = background_surface else {
+    let ServerMessage::PaneSurfaceV2(background_surface) = background_surface else {
         panic!("expected non-owning client shell pane surface");
     };
     assert!(background_surface.graphics.assets.is_empty());
