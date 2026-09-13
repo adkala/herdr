@@ -11,6 +11,9 @@ pub(crate) enum EndpointControlMessage {
     AgentViewProjection(DecodedAgentViewProjection),
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
+    /// The server asks this shell to query its outer terminal's clipboard with
+    /// OSC 52 (`advanced.osc52_paste = "terminal"`).
+    HostClipboardQuery,
     Ignored,
 }
 
@@ -53,6 +56,9 @@ pub(crate) fn decode_endpoint_control(
             },
         ));
     }
+    if kind == crate::protocol::endpoint::HOST_CLIPBOARD_QUERY_KIND {
+        return Ok(EndpointControlMessage::HostClipboardQuery);
+    }
     if kind == crate::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND {
         let snapshot = serde_json::from_str(data)
             .map_err(|error| format!("invalid endpoint snapshot: {error}"))?;
@@ -68,6 +74,14 @@ pub(crate) fn decode_endpoint_control(
 
 pub(crate) fn protocol_failure_is_fatal(endpoint_id: &ClientEndpointId) -> bool {
     endpoint_id.is_local()
+}
+
+/// Writes the OSC 52 clipboard read query to the host terminal. Its reply
+/// arrives on stdin as `RawInputEvent::HostClipboardReply` and is relayed back
+/// with `HOST_CLIPBOARD_REPLY_KIND`.
+pub(crate) fn write_host_clipboard_query<W: std::io::Write>(out: &mut W) -> std::io::Result<()> {
+    out.write_all(crate::selection::OSC52_CLIPBOARD_QUERY)?;
+    out.flush()
 }
 
 #[cfg(test)]
@@ -162,6 +176,24 @@ mod tests {
             .unwrap(),
             EndpointControlMessage::Ignored
         ));
+    }
+
+    #[test]
+    fn host_clipboard_query_control_is_recognized_regardless_of_data() {
+        for data in ["", "{}", "future"] {
+            assert!(matches!(
+                decode_endpoint_control(crate::protocol::endpoint::HOST_CLIPBOARD_QUERY_KIND, data)
+                    .unwrap(),
+                EndpointControlMessage::HostClipboardQuery
+            ));
+        }
+    }
+
+    #[test]
+    fn host_clipboard_query_writes_the_osc52_read_request() {
+        let mut out = Vec::new();
+        write_host_clipboard_query(&mut out).unwrap();
+        assert_eq!(out, b"\x1b]52;c;?\x07");
     }
 
     #[test]
