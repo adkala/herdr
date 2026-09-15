@@ -12,6 +12,9 @@ pub(crate) enum GraphicsOperation {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GraphicsOutput {
     pub(crate) operations: Vec<GraphicsOperation>,
+    /// Placeholder cells to paint over the composed text so the host shows
+    /// virtual placements there; empty under the direct transport.
+    pub(crate) placeholders: Vec<super::PlaceholderCell>,
 }
 
 impl GraphicsOutput {
@@ -33,6 +36,7 @@ impl GraphicsOutput {
 
     pub(crate) fn extend(&mut self, other: Self) {
         self.operations.extend(other.operations);
+        self.placeholders.extend(other.placeholders);
     }
 
     #[cfg(test)]
