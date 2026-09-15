@@ -7,8 +7,9 @@ use super::output::GraphicsOutput;
 use ratatui::layout::Rect;
 
 use super::{
-    clipped_placement, collect_visible_placements, encode_graphics_output, HostCellSize,
-    HostGraphicsCache, HostPlacement, HostSourceKey, ImageSignature,
+    clipped_placement, collect_visible_placements, encode_graphics_output, placeholder_cells,
+    HostCellSize, HostGraphicsCache, HostGraphicsTransport, HostPlacement, HostSourceKey,
+    ImageSignature,
 };
 use crate::ghostty::{
     KittyImageDescriptor, KittyImageFormat, KittyImagePlacement, KittyPlacementRenderInfo,
@@ -235,6 +236,25 @@ impl ClientState {
                 .unwrap_or_else(|| native_host_image_id(&self.scope, key));
         }
         host_image_id(&self.scope, key)
+    }
+
+    pub(crate) fn with_transport(transport: HostGraphicsTransport) -> Self {
+        Self {
+            host: HostGraphicsCache::with_transport(transport),
+            ..Self::new()
+        }
+    }
+
+    pub(crate) fn transport(&self) -> HostGraphicsTransport {
+        self.host.transport()
+    }
+
+    /// Forget what the host terminal holds so the next encode deletes and
+    /// re-transmits every image and placement. Under tmux with
+    /// `allow-passthrough on`, commands written while the pane was not visible
+    /// never reached the host, so regaining focus starts over.
+    pub(crate) fn request_host_reset(&mut self) {
+        self.reset_pending = true;
     }
 
     pub(crate) fn scope(&self) -> &str {
@@ -534,8 +554,14 @@ impl ClientState {
             })
             .collect::<Vec<_>>();
         let mut output = GraphicsOutput::from_bytes(bytes);
-        self.host.request_placement_replay();
+        // The host text blit overwrites cursor-positioned placements, so every
+        // frame displays them again. Virtual placements live on their
+        // placeholder cells and only need commands when the scene changes.
+        if !self.host.transport().uses_placeholders() {
+            self.host.request_placement_replay();
+        }
         output.extend(encode_graphics_output(&mut self.host, &placements));
+        output.placeholders = placeholder_cells(self.host.transport(), &placements);
         output
     }
 }
@@ -1847,6 +1873,94 @@ mod tests {
             vec!["1;1 c=10,r=6,w=100,h=60".to_owned()]
         );
         assert_eq!(state.host.placements.len(), 1);
+    }
+
+    #[test]
+    fn placeholder_transport_anchors_images_and_cropped_pieces_on_cells() {
+        let mut state = ClientState::with_transport(HostGraphicsTransport::TmuxPlaceholders);
+        assert_eq!(state.transport(), HostGraphicsTransport::TmuxPlaceholders);
+        state.set_scope("crop");
+        let _ = state.take_pending_cleanup();
+        state.set_scene(grid_image(4, 2));
+        let cell = HostCellSize {
+            width_px: 8,
+            height_px: 16,
+        };
+
+        let whole =
+            state.encode_output(Visibility::Main, (3, 1), None, cell, &Occlusion::default());
+        let bytes = String::from_utf8(whole.clone().into_inline_bytes()).unwrap();
+        assert!(bytes.contains("a=t,t=d"), "{bytes:?}");
+        assert!(bytes.contains("a=p,U=1,"), "{bytes:?}");
+        assert!(!bytes.contains("\u{1b}["), "no cursor moves: {bytes:?}");
+        assert!(!bytes.contains("C=1"), "{bytes:?}");
+        let cells = whole
+            .placeholders
+            .iter()
+            .map(|cell| (cell.x, cell.y, cell.row, cell.col))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cells,
+            vec![
+                (3, 1, 0, 0),
+                (4, 1, 0, 1),
+                (5, 1, 0, 2),
+                (6, 1, 0, 3),
+                (3, 2, 1, 0),
+                (4, 2, 1, 1),
+                (5, 2, 1, 2),
+                (6, 2, 1, 3),
+            ]
+        );
+
+        // Cells anchor the image: an unchanged or moved frame writes nothing.
+        let again =
+            state.encode_output(Visibility::Main, (3, 1), None, cell, &Occlusion::default());
+        assert!(again.is_empty());
+        assert_eq!(again.placeholders, whole.placeholders);
+        let moved =
+            state.encode_output(Visibility::Main, (9, 4), None, cell, &Occlusion::default());
+        assert!(moved.is_empty());
+        assert_eq!((moved.placeholders[0].x, moved.placeholders[0].y), (9, 4));
+
+        // An overlay over the right half leaves one cropped virtual placement
+        // whose cells index its own two-column grid.
+        let mut cover = Occlusion::default();
+        cover.cover(Rect::new(5, 1, 2, 2));
+        let cropped = state.encode_output(Visibility::Main, (3, 1), None, cell, &cover);
+        let bytes = String::from_utf8(cropped.clone().into_inline_bytes()).unwrap();
+        assert!(!bytes.contains("a=t,"), "{bytes:?}");
+        assert!(bytes.contains(",c=2,r=2,"), "{bytes:?}");
+        assert!(bytes.contains(",w=20,h=20;"), "{bytes:?}");
+        assert_eq!(
+            cropped
+                .placeholders
+                .iter()
+                .map(|cell| (cell.x, cell.y, cell.row, cell.col))
+                .collect::<Vec<_>>(),
+            vec![(3, 1, 0, 0), (4, 1, 0, 1), (3, 2, 1, 0), (4, 2, 1, 1)]
+        );
+
+        // Hiding the surface deletes the image and paints no cells.
+        let hidden = state.encode_output(
+            Visibility::Hidden,
+            (3, 1),
+            None,
+            cell,
+            &Occlusion::default(),
+        );
+        assert!(hidden.placeholders.is_empty());
+
+        // A host reset re-transmits everything on the next frame.
+        let _ = state.encode_output(Visibility::Main, (3, 1), None, cell, &Occlusion::default());
+        state.request_host_reset();
+        let reset =
+            state.encode_output(Visibility::Main, (3, 1), None, cell, &Occlusion::default());
+        let bytes = String::from_utf8(reset.clone().into_inline_bytes()).unwrap();
+        assert!(bytes.contains("a=d,d=I"), "{bytes:?}");
+        assert!(bytes.contains("a=t,t=d"), "{bytes:?}");
+        assert!(bytes.contains("a=p,U=1,"), "{bytes:?}");
+        assert_eq!(reset.placeholders.len(), 8);
     }
 
     #[test]

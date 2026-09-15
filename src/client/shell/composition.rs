@@ -721,6 +721,7 @@ impl ClientShellState {
             self.hits.popup = None;
         }
         let graphics = self.compose_graphics(layout, &occlusion);
+        crate::kitty_graphics::paint_placeholder_cells(&mut frame, &graphics.placeholders);
         Some(crate::client::frame_output::ComposedFrame { frame, graphics })
     }
 }

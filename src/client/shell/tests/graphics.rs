@@ -549,3 +549,139 @@ fn popup_terminal_keeps_own_graphics_and_hides_only_background_overlap() {
     ));
     assert!(!String::from_utf8_lossy(&frame.graphics.clone().into_inline_bytes()).contains("a=t"));
 }
+
+fn tmux_graphics_state() -> ClientShellState {
+    let mut state = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default()).with_graphics_transport(
+            crate::kitty_graphics::HostGraphicsTransport::TmuxPlaceholders,
+        ),
+    );
+    state.set_snapshot(Box::new(snapshot()));
+    let layout = state.layout(106, 20);
+    let mut pane_surface = surface();
+    let origin = (
+        layout.pane_surface.x + pane_surface.panes[0].inner_rect.x,
+        layout.pane_surface.y + pane_surface.panes[0].inner_rect.y,
+    );
+    add_main_image(&mut pane_surface, layout, origin, 1);
+    state.set_pane_surface(pane_surface);
+    state
+}
+
+fn placeholder_cells_in(frame: &FrameData) -> Vec<(u16, u16, u32, u32)> {
+    frame
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| cell.symbol.starts_with('\u{10EEEE}'))
+        .map(|(index, cell)| {
+            (
+                (index % usize::from(frame.width)) as u16,
+                (index / usize::from(frame.width)) as u16,
+                cell.fg,
+                cell.underline_color,
+            )
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+#[test]
+fn client_shell_paints_placeholder_cells_under_the_tmux_transport() {
+    let mut state = tmux_graphics_state();
+
+    let frame = state.compose(106, 20).expect("visible graphics frame");
+    let graphics = String::from_utf8(frame.graphics.clone().into_inline_bytes()).unwrap();
+    assert!(graphics.contains("a=t,t=d"), "{graphics:?}");
+    assert!(graphics.contains("a=p,U=1,"), "{graphics:?}");
+    assert!(!graphics.contains("\x1b["), "{graphics:?}");
+    let pane = state.hits.panes[0].clone();
+    let cells = placeholder_cells_in(&frame);
+    assert_eq!(cells.len(), 1, "{cells:?}");
+    assert_eq!(
+        (cells[0].0, cells[0].1),
+        (pane.inner_rect.x, pane.inner_rect.y)
+    );
+    // Terminal images take native ids above 24 bits: the low bits ride the
+    // foreground color and the high byte a third diacritic.
+    let image_id = crate::kitty_graphics::surface::native_host_image_id(
+        state.graphics_scope(),
+        &image(
+            SurfaceGraphicsTarget::Pane {
+                pane_id: "pane_1".into(),
+            },
+            0,
+            0,
+            1,
+        )
+        .0
+        .key,
+    );
+    assert_eq!(
+        cells[0].2,
+        crate::protocol::color_to_u32(ratatui::style::Color::Rgb(
+            (image_id >> 16) as u8,
+            (image_id >> 8) as u8,
+            image_id as u8,
+        )),
+        "image id rides the foreground"
+    );
+    let index = usize::from(cells[0].1) * usize::from(frame.width) + usize::from(cells[0].0);
+    assert_eq!(
+        frame.cells[index].symbol.chars().nth(3),
+        crate::ghostty::kitty_placeholder_diacritic(image_id >> 24)
+    );
+    assert_ne!(cells[0].3, 0, "placement id rides the underline color");
+
+    // An unchanged frame sends nothing new but keeps its cells.
+    let again = state.compose(106, 20).expect("second frame");
+    assert!(again.graphics.is_empty(), "{:?}", again.graphics);
+    assert_eq!(placeholder_cells_in(&again), cells);
+}
+
+#[test]
+fn regaining_focus_under_the_tmux_transport_retransmits_graphics() {
+    let mut state = tmux_graphics_state();
+    state.compose(106, 20).expect("first frame");
+    assert!(state
+        .compose(106, 20)
+        .expect("settled frame")
+        .graphics
+        .is_empty());
+
+    let outcome = state.handle_input_bytes(b"\x1b[I");
+    assert!(outcome.repaint, "focus regain must recompose to re-upload");
+    let frame = state.compose(106, 20).expect("focus frame");
+    let graphics = String::from_utf8(frame.graphics.clone().into_inline_bytes()).unwrap();
+    assert!(graphics.contains("a=d,d=I"), "{graphics:?}");
+    assert!(graphics.contains("a=t,t=d"), "{graphics:?}");
+    assert!(graphics.contains("a=p,U=1,"), "{graphics:?}");
+    assert_eq!(placeholder_cells_in(&frame).len(), 1);
+}
+
+#[test]
+fn regaining_focus_under_the_direct_transport_sends_no_graphics_reupload() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let layout = state.layout(106, 20);
+    let mut pane_surface = surface();
+    let origin = (
+        layout.pane_surface.x + pane_surface.panes[0].inner_rect.x,
+        layout.pane_surface.y + pane_surface.panes[0].inner_rect.y,
+    );
+    add_main_image(&mut pane_surface, layout, origin, 1);
+    state.set_pane_surface(pane_surface);
+    let first = state.compose(106, 20).expect("first frame");
+    assert!(placeholder_cells_in(&first).is_empty());
+
+    let _ = state.handle_input_bytes(b"\x1b[I");
+    let frame = state.compose(106, 20).expect("focus frame");
+    let graphics = String::from_utf8(frame.graphics.clone().into_inline_bytes()).unwrap();
+    assert!(!graphics.contains("a=t,t=d"), "{graphics:?}");
+    assert!(!graphics.contains("a=d,d=I"), "{graphics:?}");
+    assert!(
+        graphics.contains("a=p,i="),
+        "direct placements replay every frame: {graphics:?}"
+    );
+    assert!(graphics.contains("C=1"), "{graphics:?}");
+}
