@@ -19,6 +19,7 @@ pub(super) struct ClientState {
     pub(super) reported_cell_size: (u32, u32),
     pub(super) sound_config: crate::config::SoundConfig,
     pub(super) kitty_graphics_enabled: bool,
+    pub(super) graphics_transport: crate::kitty_graphics::HostGraphicsTransport,
     pub(super) pixel_geometry_enabled: bool,
     pub(super) pixel_geometry_exact: bool,
     #[cfg(unix)]
@@ -131,7 +132,8 @@ impl ClientState {
             return;
         }
         let mut stdout = io::stdout();
-        let _ = write_encoded_frame_with_graphics(&mut stdout, &[], graphics);
+        let _ =
+            write_encoded_frame_with_graphics(&mut stdout, &[], graphics, self.graphics_transport);
         let _ = stdout.flush();
     }
 
@@ -223,7 +225,12 @@ impl ClientState {
         } else {
             &[]
         };
-        let _ = write_encoded_frame_with_graphics(&mut stdout, &encoded.bytes, graphics);
+        let _ = write_encoded_frame_with_graphics(
+            &mut stdout,
+            &encoded.bytes,
+            graphics,
+            self.graphics_transport,
+        );
         let _ = stdout.flush();
         self.blit_encoder.commit(frame_data, encoded);
         self.repaint_pending = false;

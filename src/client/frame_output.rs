@@ -1,15 +1,23 @@
 use std::collections::HashSet;
 use std::io;
+use std::io::Write as _;
 use std::sync::{Mutex, OnceLock};
 
+use crate::kitty_graphics::{wrap_kitty_graphics_for_tmux, HostGraphicsTransport};
 use crate::protocol::render_ansi;
 
 static RECEIVED_KITTY_GRAPHICS_IDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
 
+/// Write a blitted frame with its Kitty graphics inserted before the final
+/// synchronized-output end, between a cursor save and restore. This is the one
+/// place graphics bytes reach the host terminal, so the tmux passthrough
+/// wrapping happens here; the save/restore stays outside the wrapper because
+/// tmux itself tracks the pane cursor.
 pub(super) fn write_encoded_frame_with_graphics(
     mut writer: impl io::Write,
     encoded: &[u8],
     graphics: &[u8],
+    transport: HostGraphicsTransport,
 ) -> io::Result<()> {
     if graphics.is_empty() {
         return writer.write_all(encoded);
@@ -20,7 +28,11 @@ pub(super) fn write_encoded_frame_with_graphics(
     writer.write_all(&encoded[..insertion])?;
     record_received_kitty_graphics(graphics);
     writer.write_all(b"\x1b7")?;
-    writer.write_all(graphics)?;
+    if transport.uses_placeholders() {
+        writer.write_all(&wrap_kitty_graphics_for_tmux(graphics))?;
+    } else {
+        writer.write_all(graphics)?;
+    }
     writer.write_all(b"\x1b8")?;
     writer.write_all(&encoded[insertion..])
 }
@@ -40,16 +52,24 @@ pub(super) fn record_received_kitty_graphics(bytes: &[u8]) {
     }
 }
 
-pub(super) fn clear_received_kitty_graphics(mut writer: impl io::Write) -> io::Result<()> {
+pub(super) fn clear_received_kitty_graphics(
+    mut writer: impl io::Write,
+    transport: HostGraphicsTransport,
+) -> io::Result<()> {
     let Some(set) = RECEIVED_KITTY_GRAPHICS_IDS.get() else {
         return Ok(());
     };
     let Ok(mut set) = set.lock() else {
         return Ok(());
     };
+    let mut bytes = Vec::new();
     for id in set.drain() {
-        write!(writer, "\x1b_Ga=d,d=I,i={id},q=2;\x1b\\")?;
+        write!(&mut bytes, "\x1b_Ga=d,d=I,i={id},q=2;\x1b\\")?;
     }
+    if transport.uses_placeholders() {
+        bytes = wrap_kitty_graphics_for_tmux(&bytes);
+    }
+    writer.write_all(&bytes)?;
     writer.flush()
 }
 

@@ -55,11 +55,26 @@ impl ClientShellState {
             .popup
             .as_ref()
             .map(|popup| (popup.inner_rect.x, popup.inner_rect.y));
-        frame.graphics = self.graphics.encode(
+        let graphics = self.graphics.encode(
             visibility,
             (layout.pane_surface.x, layout.pane_surface.y),
             popup_origin,
             self.graphics_cell_size,
         );
+        frame.graphics = graphics.bytes;
+        crate::kitty_graphics::paint_placeholder_cells(frame, &graphics.placeholders);
+    }
+
+    /// tmux with `allow-passthrough on` drops passthrough written while the pane
+    /// is not visible, so images uploaded or placed while another window was
+    /// current never reached the host terminal. Regaining focus forgets the
+    /// host cache so the next compose transmits everything again; returns
+    /// whether that compose is needed.
+    pub(super) fn refresh_graphics_on_focus_gained(&mut self) -> bool {
+        if !self.graphics.transport().uses_placeholders() {
+            return false;
+        }
+        self.graphics.request_host_reset();
+        true
     }
 }

@@ -126,6 +126,7 @@ mod tests {
             reported_cell_size: (0, 0),
             sound_config: Default::default(),
             kitty_graphics_enabled: false,
+            graphics_transport: Default::default(),
             pixel_geometry_enabled: false,
             pixel_geometry_exact: false,
             #[cfg(unix)]

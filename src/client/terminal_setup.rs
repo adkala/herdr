@@ -317,7 +317,10 @@ fn restore_terminal_state(
     reset_host_color_scheme_reports: bool,
     #[cfg(windows)] restore_windows_input_mode: Option<u32>,
 ) -> io::Result<()> {
-    let _ = clear_received_kitty_graphics(&mut io::stdout());
+    let _ = clear_received_kitty_graphics(
+        &mut io::stdout(),
+        crate::kitty_graphics::HostGraphicsTransport::detect(true),
+    );
 
     // Reset modifyOtherKeys if we enabled it.
     if reset_modify_other_keys {

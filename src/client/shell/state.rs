@@ -107,6 +107,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) preferences: preferences::ClientChromePreferences,
     pub(super) startup_config_diagnostic: Option<String>,
     pub(super) startup_onboarding: bool,
+    /// How this client writes Kitty graphics to its host terminal.
+    pub(super) graphics_transport: crate::kitty_graphics::HostGraphicsTransport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1010,6 +1012,7 @@ pub(super) struct WorkspaceEntry {
 
 impl ClientShellState {
     pub(crate) fn new(mut config: ClientShellConfig) -> Self {
+        let graphics_transport = config.graphics_transport;
         let preferences = config.preferences.clone();
         let local_config_diagnostic = config.startup_config_diagnostic.take();
         let overlay = config
@@ -1050,7 +1053,9 @@ impl ClientShellState {
             snapshot: None,
             pane_surface: None,
             pending_pane_surface: None,
-            graphics: crate::kitty_graphics::surface::ClientState::default(),
+            graphics: crate::kitty_graphics::surface::ClientState::with_transport(
+                graphics_transport,
+            ),
             graphics_cell_size: crate::kitty_graphics::HostCellSize {
                 width_px: 1,
                 height_px: 1,
