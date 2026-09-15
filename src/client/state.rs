@@ -49,6 +49,7 @@ pub(super) struct ClientState {
     pub(super) reported_cell_size: (u32, u32),
     pub(super) sound_config: crate::config::SoundConfig,
     pub(super) kitty_graphics_enabled: bool,
+    pub(super) graphics_transport: crate::kitty_graphics::HostGraphicsTransport,
     pub(super) pixel_geometry_enabled: bool,
     pub(super) pixel_geometry_exact: bool,
     /// The host's answer to the SGR pixel mouse probe; None when unknown.
@@ -118,6 +119,7 @@ impl ClientState {
             reported_cell_size: (0, 0),
             sound_config: Default::default(),
             kitty_graphics_enabled: false,
+            graphics_transport: Default::default(),
             pixel_geometry_enabled: false,
             pixel_geometry_exact: false,
             host_sgr_pixel_mouse: None,
@@ -318,7 +320,8 @@ impl ClientState {
             return;
         }
         let mut stdout = io::stdout();
-        let _ = write_encoded_frame_with_graphics(&mut stdout, &[], graphics);
+        let _ =
+            write_encoded_frame_with_graphics(&mut stdout, &[], graphics, self.graphics_transport);
         let _ = stdout.flush();
     }
 
@@ -532,6 +535,7 @@ impl ClientState {
                 encoded,
                 &graphics,
                 &mut self.image_files,
+                self.graphics_transport,
             )?;
         } else {
             writer.write_all(encoded)?;

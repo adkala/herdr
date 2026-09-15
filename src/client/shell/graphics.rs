@@ -81,4 +81,17 @@ impl ClientShellState {
             occlusion,
         )
     }
+
+    /// tmux with `allow-passthrough on` drops passthrough written while the pane
+    /// is not visible, so images uploaded or placed while another window was
+    /// current never reached the host terminal. Regaining focus forgets the
+    /// host cache so the next compose transmits everything again; returns
+    /// whether that compose is needed.
+    pub(super) fn refresh_graphics_on_focus_gained(&mut self) -> bool {
+        if !self.graphics.transport().uses_placeholders() {
+            return false;
+        }
+        self.graphics.request_host_reset();
+        true
+    }
 }
