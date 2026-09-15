@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Kitty graphics now work for clients started inside tmux: Herdr detects `TMUX`, wraps every Kitty command in `DCS tmux;` passthrough, and draws images as Unicode-placeholder virtual placements so tmux forwards them as cells. Requires tmux 3.3 or newer with `allow-passthrough on` (or `all`), `focus-events on` so images are re-uploaded after switching windows, and an outer terminal with placeholder support such as kitty or Ghostty; images behind text (negative z-index) draw over it there. Clients outside tmux produce the same bytes as before.
+
 ### Fixed
 - Attached clients now render colored underlines (SGR 58), so editor diagnostics such as Neovim's red undercurls keep their color instead of falling back to the text color. The color travels in a negotiated `shell.surface.v2` surface codec; clients that only speak `shell.surface.v1` keep receiving unchanged v1 frames.
 

@@ -152,20 +152,26 @@ fn run_client_with_mode(
         } else {
             crate::config::config_diagnostic_summary(&loaded_config.diagnostics)
         };
+    let kitty_graphics_enabled =
+        loaded_config.config.kitty_graphics_enabled() && client_rendered_shell;
+    // Inside tmux the outer terminal only sees Kitty commands through
+    // passthrough and never learns where the cursor is, so images travel as
+    // virtual placements anchored by placeholder cells in the composed frame.
+    let graphics_transport =
+        crate::kitty_graphics::HostGraphicsTransport::detect(kitty_graphics_enabled);
     let shell_config = client_rendered_shell.then(|| {
         shell::ClientShellConfig::from_config(&loaded_config.config)
             .with_startup_config_diagnostic(startup_config_diagnostic)
             .with_startup_onboarding(loaded_config.config.should_show_onboarding())
             .with_keybinding_source(keybinding_source)
             .with_local_endpoint(&socket_path)
+            .with_graphics_transport(graphics_transport)
     });
     let mouse_capture = loaded_config.config.ui.mouse_capture;
     let mouse_scroll_lines = loaded_config.config.ui.mouse_scroll_lines();
     let redraw_on_focus_gained = loaded_config.config.ui.redraw_on_focus_gained;
     let host_cursor = loaded_config.config.ui.host_cursor;
     let remote_image_paste_key = client_remote_image_paste_key(&loaded_config.config);
-    let kitty_graphics_enabled =
-        loaded_config.config.kitty_graphics_enabled() && client_rendered_shell;
     let pixel_geometry_enabled = kitty_graphics_enabled || attach_escape.is_some();
     let endpoint_keybindings = shell_config
         .as_ref()
@@ -176,6 +182,7 @@ fn run_client_with_mode(
         redraw_on_focus_gained,
         host_cursor,
         kitty_graphics_enabled,
+        graphics_transport,
         pixel_geometry_enabled,
         pixel_geometry_fallback: kitty_graphics_enabled,
         mouse_capture_active: mouse_capture,
@@ -186,6 +193,9 @@ fn run_client_with_mode(
 
     crate::logging::startup("client");
     info!(path = %socket_path.display(), "{log_message}");
+    if graphics_transport.uses_placeholders() {
+        info!("kitty graphics use tmux passthrough with unicode placeholders");
+    }
 
     let endpoint_catalog = if client_rendered_shell && !is_remote_client_process() {
         endpoint::EndpointCatalog::load().unwrap_or_else(|error| {
@@ -388,6 +398,7 @@ async fn run_client_loop(
         reported_cell_size: (initial_cell_width_px, initial_cell_height_px),
         sound_config: config.sound_config,
         kitty_graphics_enabled: config.kitty_graphics_enabled,
+        graphics_transport: config.graphics_transport,
         pixel_geometry_enabled: config.pixel_geometry_enabled,
         pixel_geometry_exact: initial_pixel_geometry_exact,
         #[cfg(unix)]

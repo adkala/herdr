@@ -5,7 +5,8 @@ use ratatui::layout::Rect;
 
 use super::{
     clipped_placement, collect_visible_placements, encode_graphics_update_incremental,
-    HostCellSize, HostGraphicsCache, HostPlacement, HostSourceKey, ImageSignature,
+    placeholder_cells, HostCellSize, HostGraphicsCache, HostGraphicsTransport, HostPlacement,
+    HostSourceKey, ImageSignature, PlaceholderCell,
 };
 use crate::ghostty::{
     KittyImageDescriptor, KittyImageFormat, KittyImagePlacement, KittyPlacementRenderInfo,
@@ -37,6 +38,16 @@ pub(crate) enum Visibility {
     Hidden,
 }
 
+/// Graphics output for one composed frame.
+#[derive(Debug, Default)]
+pub(crate) struct ClientGraphicsFrame {
+    /// Kitty commands to write after the text frame.
+    pub(crate) bytes: Vec<u8>,
+    /// Placeholder cells to paint over the composed text; empty under the
+    /// direct transport.
+    pub(crate) placeholders: Vec<PlaceholderCell>,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ClientState {
     scope: String,
@@ -50,6 +61,25 @@ pub(crate) struct ClientState {
 }
 
 impl ClientState {
+    pub(crate) fn with_transport(transport: HostGraphicsTransport) -> Self {
+        Self {
+            host: HostGraphicsCache::with_transport(transport),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn transport(&self) -> HostGraphicsTransport {
+        self.host.transport()
+    }
+
+    /// Forget what the host terminal holds so the next encode deletes and
+    /// re-transmits every image and placement. Under tmux with
+    /// `allow-passthrough on`, commands written while the pane was not visible
+    /// never reached the host, so regaining focus starts over.
+    pub(crate) fn request_host_reset(&mut self) {
+        self.reset_pending = true;
+    }
+
     pub(crate) fn scope(&self) -> &str {
         &self.scope
     }
@@ -166,7 +196,7 @@ impl ClientState {
         main_origin: (u16, u16),
         popup_origin: Option<(u16, u16)>,
         cell_size: HostCellSize,
-    ) -> Vec<u8> {
+    ) -> ClientGraphicsFrame {
         let mut bytes = self.take_pending_cleanup();
         self.stale_images.sort_unstable();
         self.stale_images.dedup();
@@ -182,7 +212,10 @@ impl ClientState {
         }
         if !cell_size.is_known() || self.scope.is_empty() {
             bytes.extend(self.host.clear_bytes());
-            return bytes;
+            return ClientGraphicsFrame {
+                bytes,
+                placeholders: Vec::new(),
+            };
         }
 
         let placements = self
@@ -201,7 +234,12 @@ impl ClientState {
                 )
             })
             .collect::<Vec<_>>();
-        self.host.request_placement_replay();
+        // The host text blit overwrites cursor-positioned placements, so every
+        // frame displays them again. Virtual placements live on their
+        // placeholder cells and only need commands when the scene changes.
+        if !self.host.transport().uses_placeholders() {
+            self.host.request_placement_replay();
+        }
         loop {
             let encoded = encode_graphics_update_incremental(
                 &mut self.host,
@@ -212,8 +250,12 @@ impl ClientState {
             );
             bytes.extend(encoded.bytes);
             if !encoded.incomplete {
-                return bytes;
+                break;
             }
+        }
+        ClientGraphicsFrame {
+            placeholders: placeholder_cells(self.host.transport(), &placements),
+            bytes,
         }
     }
 }
@@ -704,27 +746,31 @@ mod tests {
         );
         state.set_scene(scene(image, 1, 2));
 
-        let first = state.encode(
-            Visibility::Main,
-            (10, 5),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        );
+        let first = state
+            .encode(
+                Visibility::Main,
+                (10, 5),
+                None,
+                HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            )
+            .bytes;
         assert!(String::from_utf8_lossy(&first).contains("a=t,t=d"));
         assert!(String::from_utf8_lossy(&first).contains("\u{1b}[8;12H"));
 
-        let second = state.encode(
-            Visibility::Main,
-            (10, 5),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        );
+        let second = state
+            .encode(
+                Visibility::Main,
+                (10, 5),
+                None,
+                HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            )
+            .bytes;
         let second = String::from_utf8_lossy(&second);
         assert!(!second.contains("a=t,t=d"));
         assert!(second.contains("a=p"));
@@ -747,12 +793,12 @@ mod tests {
             width_px: 8,
             height_px: 16,
         };
-        let _ = state.encode(Visibility::Main, (4, 2), None, cell);
+        let _ = state.encode(Visibility::Main, (4, 2), None, cell).bytes;
 
-        let hidden = state.encode(Visibility::Hidden, (4, 2), None, cell);
+        let hidden = state.encode(Visibility::Hidden, (4, 2), None, cell).bytes;
         assert!(String::from_utf8_lossy(&hidden).contains("a=d,d=i"));
 
-        let restored = state.encode(Visibility::Main, (4, 2), None, cell);
+        let restored = state.encode(Visibility::Main, (4, 2), None, cell).bytes;
         let restored = String::from_utf8_lossy(&restored);
         assert!(restored.contains("a=p"));
         assert!(!restored.contains("a=t,t=d"));
@@ -771,15 +817,17 @@ mod tests {
         );
         state.set_scene(scene(image, 2, 1));
 
-        let bytes = state.encode(
-            Visibility::Popup,
-            (20, 4),
-            Some((30, 10)),
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        );
+        let bytes = state
+            .encode(
+                Visibility::Popup,
+                (20, 4),
+                Some((30, 10)),
+                HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            )
+            .bytes;
         assert!(String::from_utf8_lossy(&bytes).contains("\u{1b}[12;33H"));
     }
 
@@ -788,15 +836,17 @@ mod tests {
     fn trusted_direct_asset_is_placed_without_inline_reupload() {
         let mut state = ClientState::default();
         state.set_scope("endpoint-a:boot-1");
-        let _ = state.encode(
-            Visibility::Hidden,
-            (0, 0),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        );
+        let _ = state
+            .encode(
+                Visibility::Hidden,
+                (0, 0),
+                None,
+                HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            )
+            .bytes;
         let image = asset(
             SurfaceGraphicsTarget::Pane {
                 pane_id: "w1:p1".into(),
@@ -810,15 +860,17 @@ mod tests {
         direct_scene.assets.clear();
         state.set_scene(direct_scene);
 
-        let bytes = state.encode(
-            Visibility::Main,
-            (0, 0),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        );
+        let bytes = state
+            .encode(
+                Visibility::Main,
+                (0, 0),
+                None,
+                HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            )
+            .bytes;
         let bytes = String::from_utf8_lossy(&bytes);
         assert!(bytes.contains("a=p"));
         assert!(!bytes.contains("a=t,t=d"));
@@ -843,15 +895,17 @@ mod tests {
         state.set_scene(direct_scene);
         assert!(state.trust_direct_asset(&image.key, image_id));
 
-        let bytes = state.encode(
-            Visibility::Main,
-            (0, 0),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        );
+        let bytes = state
+            .encode(
+                Visibility::Main,
+                (0, 0),
+                None,
+                HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            )
+            .bytes;
         let bytes = String::from_utf8_lossy(&bytes);
         assert!(bytes.contains("a=p"), "{bytes}");
         assert!(!bytes.contains("a=t,t=d"), "{bytes}");
@@ -875,57 +929,71 @@ mod tests {
         active.assets.clear();
         state.set_scene(active.clone());
         assert!(state.trust_direct_asset(&image.key, image_id));
-        let _ = state.encode(
-            Visibility::Main,
-            (0, 0),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        );
+        let _ = state
+            .encode(
+                Visibility::Main,
+                (0, 0),
+                None,
+                HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            )
+            .bytes;
 
         state.set_scene(SurfaceGraphicsScene {
             retained_assets: vec![image.key.clone()],
             ..SurfaceGraphicsScene::default()
         });
-        let hidden = String::from_utf8(state.encode(
-            Visibility::Main,
-            (0, 0),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        ))
+        let hidden = String::from_utf8(
+            state
+                .encode(
+                    Visibility::Main,
+                    (0, 0),
+                    None,
+                    HostCellSize {
+                        width_px: 8,
+                        height_px: 16,
+                    },
+                )
+                .bytes,
+        )
         .unwrap();
         assert!(!hidden.contains(&format!("a=d,d=I,i={image_id}")));
 
         active.retained_assets.push(image.key.clone());
         state.set_scene(active);
-        let restored = String::from_utf8(state.encode(
-            Visibility::Main,
-            (0, 0),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        ))
+        let restored = String::from_utf8(
+            state
+                .encode(
+                    Visibility::Main,
+                    (0, 0),
+                    None,
+                    HostCellSize {
+                        width_px: 8,
+                        height_px: 16,
+                    },
+                )
+                .bytes,
+        )
         .unwrap();
         assert!(restored.contains("a=p"), "{restored}");
         assert!(!restored.contains("a=t,t=d"), "{restored}");
 
         state.set_scene(SurfaceGraphicsScene::default());
-        let removed = String::from_utf8(state.encode(
-            Visibility::Main,
-            (0, 0),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        ))
+        let removed = String::from_utf8(
+            state
+                .encode(
+                    Visibility::Main,
+                    (0, 0),
+                    None,
+                    HostCellSize {
+                        width_px: 8,
+                        height_px: 16,
+                    },
+                )
+                .bytes,
+        )
         .unwrap();
         assert!(removed.contains(&format!("a=d,d=I,i={image_id}")));
     }
@@ -954,15 +1022,19 @@ mod tests {
         graphics.placements.extend(popup_scene.placements);
         state.set_scene(graphics);
 
-        let bytes = String::from_utf8(state.encode(
-            Visibility::Popup,
-            (2, 1),
-            Some((20, 10)),
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        ))
+        let bytes = String::from_utf8(
+            state
+                .encode(
+                    Visibility::Popup,
+                    (2, 1),
+                    Some((20, 10)),
+                    HostCellSize {
+                        width_px: 8,
+                        height_px: 16,
+                    },
+                )
+                .bytes,
+        )
         .unwrap();
         assert!(bytes.contains("\u{1b}[2;3H"), "{bytes}");
         assert!(bytes.contains("\u{1b}[11;21H"), "{bytes}");
@@ -996,15 +1068,17 @@ mod tests {
         assert!(state.trust_direct_asset(&image.key, image_id));
         state.set_scene(SurfaceGraphicsScene::default());
 
-        let bytes = state.encode(
-            Visibility::Hidden,
-            (0, 0),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        );
+        let bytes = state
+            .encode(
+                Visibility::Hidden,
+                (0, 0),
+                None,
+                HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            )
+            .bytes;
         let bytes = String::from_utf8_lossy(&bytes);
         assert!(bytes.contains(&format!("a=d,d=I,i={image_id}")), "{bytes}");
     }
@@ -1021,15 +1095,17 @@ mod tests {
             vec![1, 2, 3, 4],
         );
         state.set_scene(scene(image, 0, 0));
-        let _ = state.encode(
-            Visibility::Main,
-            (0, 0),
-            None,
-            HostCellSize {
-                width_px: 8,
-                height_px: 16,
-            },
-        );
+        let _ = state
+            .encode(
+                Visibility::Main,
+                (0, 0),
+                None,
+                HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            )
+            .bytes;
 
         state.set_scope("endpoint-a:boot-2");
         let cleanup = String::from_utf8(state.take_pending_cleanup()).unwrap();
@@ -1054,7 +1130,127 @@ mod tests {
         state.set_scene(first_scene);
         state.set_scene(replacement);
 
-        let bytes = state.encode(
+        let bytes = state
+            .encode(
+                Visibility::Main,
+                (0, 0),
+                None,
+                HostCellSize {
+                    width_px: 8,
+                    height_px: 16,
+                },
+            )
+            .bytes;
+        assert!(String::from_utf8_lossy(&bytes).contains("a=t,t=d"));
+    }
+
+    #[test]
+    fn placeholder_transport_returns_cells_at_host_origin_and_virtual_placements() {
+        let mut state = ClientState::with_transport(HostGraphicsTransport::TmuxPlaceholders);
+        state.set_scope("endpoint-a:boot-1");
+        let image = asset(
+            SurfaceGraphicsTarget::Pane {
+                pane_id: "w1:p1".into(),
+            },
+            31,
+            vec![1, 2, 3, 4],
+        );
+        let image_id = host_image_id("endpoint-a:boot-1", &image.key);
+        state.set_scene(scene(image, 1, 2));
+        let cell = HostCellSize {
+            width_px: 8,
+            height_px: 16,
+        };
+
+        let first = state.encode(Visibility::Main, (10, 5), None, cell);
+        let text = String::from_utf8_lossy(&first.bytes).into_owned();
+        assert!(
+            text.contains(&format!("a=t,t=d,f=32,s=1,v=1,i={image_id},q=2")),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&format!("\x1b_Ga=p,U=1,i={image_id},p=")),
+            "{text:?}"
+        );
+        assert!(text.contains(",c=1,r=1,z=0,q=2,w=1,h=1;\x1b\\"), "{text:?}");
+        assert!(
+            !text.contains("\x1b["),
+            "virtual placements never move the cursor: {text:?}"
+        );
+        assert_eq!(first.placeholders.len(), 1);
+        let placeholder = first.placeholders[0];
+        assert_eq!((placeholder.x, placeholder.y), (11, 7));
+        assert_eq!((placeholder.row, placeholder.col), (0, 0));
+        assert_eq!(placeholder.image_id, image_id);
+        assert_ne!(placeholder.placement_id, 0);
+
+        // Unchanged scenes need no replay: the cells keep the image in place.
+        let second = state.encode(Visibility::Main, (10, 5), None, cell);
+        assert!(
+            second.bytes.is_empty(),
+            "{:?}",
+            String::from_utf8_lossy(&second.bytes)
+        );
+        assert_eq!(second.placeholders, first.placeholders);
+
+        // Moving the shell origin repaints cells but sends no command.
+        let moved = state.encode(Visibility::Main, (0, 0), None, cell);
+        assert!(moved.bytes.is_empty());
+        assert_eq!((moved.placeholders[0].x, moved.placeholders[0].y), (1, 2));
+
+        let hidden = state.encode(Visibility::Hidden, (10, 5), None, cell);
+        assert!(String::from_utf8_lossy(&hidden.bytes).contains("a=d,d=i"));
+        assert!(hidden.placeholders.is_empty());
+    }
+
+    #[test]
+    fn host_reset_deletes_and_retransmits_everything_under_placeholders() {
+        let mut state = ClientState::with_transport(HostGraphicsTransport::TmuxPlaceholders);
+        state.set_scope("endpoint-a:boot-1");
+        let image = asset(
+            SurfaceGraphicsTarget::Pane {
+                pane_id: "w1:p1".into(),
+            },
+            32,
+            vec![4, 3, 2, 1],
+        );
+        let image_id = host_image_id("endpoint-a:boot-1", &image.key);
+        state.set_scene(scene(image, 0, 0));
+        let cell = HostCellSize {
+            width_px: 8,
+            height_px: 16,
+        };
+        let _ = state.encode(Visibility::Main, (0, 0), None, cell);
+        assert!(state
+            .encode(Visibility::Main, (0, 0), None, cell)
+            .bytes
+            .is_empty());
+
+        state.request_host_reset();
+        let replayed = state.encode(Visibility::Main, (0, 0), None, cell);
+        let text = String::from_utf8_lossy(&replayed.bytes).into_owned();
+        assert!(
+            text.starts_with(&format!("\x1b_Ga=d,d=I,i={image_id},q=2;\x1b\\")),
+            "{text:?}"
+        );
+        assert!(text.contains("a=t,t=d"), "{text:?}");
+        assert!(text.contains("a=p,U=1"), "{text:?}");
+        assert_eq!(replayed.placeholders.len(), 1);
+    }
+
+    #[test]
+    fn direct_transport_returns_no_placeholder_cells() {
+        let mut state = ClientState::default();
+        state.set_scope("endpoint-a:boot-1");
+        let image = asset(
+            SurfaceGraphicsTarget::Pane {
+                pane_id: "w1:p1".into(),
+            },
+            33,
+            vec![1, 2, 3, 4],
+        );
+        state.set_scene(scene(image, 0, 0));
+        let frame = state.encode(
             Visibility::Main,
             (0, 0),
             None,
@@ -1063,6 +1259,8 @@ mod tests {
                 height_px: 16,
             },
         );
-        assert!(String::from_utf8_lossy(&bytes).contains("a=t,t=d"));
+        assert!(frame.placeholders.is_empty());
+        assert!(String::from_utf8_lossy(&frame.bytes).contains("C=1"));
+        assert_eq!(state.transport(), HostGraphicsTransport::Direct);
     }
 }

@@ -308,6 +308,7 @@ fn graphics_bytes_are_written_inside_synchronized_blit_with_saved_cursor() {
         &mut output,
         b"\x1b[?2026htext\x1b[?2026lcursor",
         b"graphics",
+        crate::kitty_graphics::HostGraphicsTransport::Direct,
     )
     .unwrap();
 
@@ -320,7 +321,13 @@ fn graphics_bytes_are_written_inside_synchronized_blit_with_saved_cursor() {
 #[test]
 fn empty_graphics_writes_only_blit_frame() {
     let mut output = Vec::new();
-    write_encoded_frame_with_graphics(&mut output, b"text", b"").unwrap();
+    write_encoded_frame_with_graphics(
+        &mut output,
+        b"text",
+        b"",
+        crate::kitty_graphics::HostGraphicsTransport::Direct,
+    )
+    .unwrap();
 
     assert_eq!(output, b"text");
 }
@@ -343,7 +350,11 @@ fn kitty_graphics_image_id_parser_tracks_herdr_ids_only() {
 fn kitty_graphics_cleanup_deletes_tracked_images_not_all_images() {
     record_received_kitty_graphics(b"\x1b_Ga=t,i=123,q=2;AAAA\x1b\\");
     let mut output = Vec::new();
-    clear_received_kitty_graphics(&mut output).unwrap();
+    clear_received_kitty_graphics(
+        &mut output,
+        crate::kitty_graphics::HostGraphicsTransport::Direct,
+    )
+    .unwrap();
     let text = String::from_utf8(output).unwrap();
     assert!(text.contains("a=d,d=I,i=123"));
     assert!(!text.contains("d=A"));
@@ -878,4 +889,37 @@ fn forward_clipboard_uses_local_clipboard_path() {
     unsafe {
         std::env::remove_var("SSH_CONNECTION");
     }
+}
+
+#[test]
+fn graphics_bytes_are_wrapped_for_tmux_between_saved_cursor() {
+    let mut output = Vec::new();
+    write_encoded_frame_with_graphics(
+        &mut output,
+        b"\x1b[?2026htext\x1b[?2026lcursor",
+        b"\x1b_Ga=p,U=1,i=1;\x1b\\",
+        crate::kitty_graphics::HostGraphicsTransport::TmuxPlaceholders,
+    )
+    .unwrap();
+
+    assert_eq!(
+        output,
+        b"\x1b[?2026htext\x1b7\x1bPtmux;\x1b\x1b_Ga=p,U=1,i=1;\x1b\x1b\\\x1b\\\x1b8\x1b[?2026lcursor"
+    );
+}
+
+#[test]
+fn kitty_graphics_cleanup_is_wrapped_for_tmux() {
+    record_received_kitty_graphics(b"\x1b_Ga=t,i=4321,q=2;AAAA\x1b\\");
+    let mut output = Vec::new();
+    clear_received_kitty_graphics(
+        &mut output,
+        crate::kitty_graphics::HostGraphicsTransport::TmuxPlaceholders,
+    )
+    .unwrap();
+    let text = String::from_utf8(output).unwrap();
+    assert!(
+        text.contains("\x1bPtmux;\x1b\x1b_Ga=d,d=I,i=4321,q=2;\x1b\x1b\\\x1b\\"),
+        "{text:?}"
+    );
 }

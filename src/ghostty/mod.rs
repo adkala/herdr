@@ -206,6 +206,7 @@ const KITTY_PLACEMENT_DATA_ROWS: ffi::GhosttyKittyGraphicsPlacementData = 11;
 
 static INSTALL_PNG_DECODER: Once = Once::new();
 static KITTY_PLACEHOLDER_DIACRITICS: OnceLock<HashMap<u32, u32>> = OnceLock::new();
+static KITTY_PLACEHOLDER_DIACRITIC_TABLE: OnceLock<Vec<u32>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum KittyImageFormat {
@@ -2169,13 +2170,14 @@ fn kitty_placeholder_color_to_id(color: CellColor) -> u32 {
     }
 }
 
-fn kitty_placeholder_diacritic_index(codepoint: u32) -> Option<u32> {
-    let map = KITTY_PLACEHOLDER_DIACRITICS.get_or_init(|| {
-        // Reuse Ghostty's vendored table so Herdr decodes the same placeholder
-        // row/column diacritics that libghostty accepts.
+/// Kitty unicode-placeholder row/column diacritics in protocol order, parsed
+/// from Ghostty's vendored table so Herdr encodes and decodes the same set
+/// that libghostty accepts.
+fn kitty_placeholder_diacritic_table() -> &'static [u32] {
+    KITTY_PLACEHOLDER_DIACRITIC_TABLE.get_or_init(|| {
         let source =
             include_str!("../../vendor/libghostty-vt/src/terminal/kitty/graphics_unicode.zig");
-        let mut map = HashMap::new();
+        let mut table = Vec::new();
         let mut in_table = false;
         for line in source.lines() {
             let line = line.trim();
@@ -2196,10 +2198,28 @@ fn kitty_placeholder_diacritic_index(codepoint: u32) -> Option<u32> {
                 continue;
             };
             if let Ok(value) = u32::from_str_radix(hex, 16) {
-                map.insert(value, map.len() as u32);
+                table.push(value);
             }
         }
-        map
+        table
+    })
+}
+
+/// The placeholder diacritic that encodes `index` (a row, column, or image id
+/// high byte), if the protocol table is large enough.
+pub(crate) fn kitty_placeholder_diacritic(index: u32) -> Option<char> {
+    kitty_placeholder_diacritic_table()
+        .get(index as usize)
+        .and_then(|codepoint| char::from_u32(*codepoint))
+}
+
+fn kitty_placeholder_diacritic_index(codepoint: u32) -> Option<u32> {
+    let map = KITTY_PLACEHOLDER_DIACRITICS.get_or_init(|| {
+        kitty_placeholder_diacritic_table()
+            .iter()
+            .enumerate()
+            .map(|(index, codepoint)| (*codepoint, index as u32))
+            .collect()
     });
     map.get(&codepoint).copied()
 }
@@ -4285,5 +4305,26 @@ mod tests {
         assert!(basic.has_styling);
         assert_eq!(basic.style.fg_color, Some(CellColor::Palette(1)));
         assert!(!basic.has_hyperlink);
+    }
+
+    #[test]
+    fn kitty_placeholder_diacritics_encode_and_decode_the_protocol_table() {
+        assert_eq!(kitty_placeholder_diacritic(0), Some('\u{0305}'));
+        assert_eq!(kitty_placeholder_diacritic(1), Some('\u{030D}'));
+        let table_len = (0..)
+            .take_while(|index| kitty_placeholder_diacritic(*index).is_some())
+            .count();
+        assert_eq!(
+            table_len, 297,
+            "kitty's placeholder table has 297 diacritics"
+        );
+        for index in 0..table_len as u32 {
+            let diacritic = kitty_placeholder_diacritic(index).unwrap();
+            assert_eq!(
+                kitty_placeholder_diacritic_index(u32::from(diacritic)),
+                Some(index)
+            );
+        }
+        assert_eq!(kitty_placeholder_diacritic_index(u32::from('a')), None);
     }
 }

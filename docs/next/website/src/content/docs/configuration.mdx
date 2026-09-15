@@ -523,6 +523,16 @@ The legacy `experimental.kitty_graphics` setting remains accepted for existing c
 
 Changing this setting requires restarting the affected Herdr server or reattaching the client. In remote sessions, the server's setting controls pane graphics parsing and API availability, while the local client's setting controls output to the outer terminal.
 
+### Inside tmux
+
+A client started inside a tmux pane (`TMUX` is set) cannot place images at cursor positions: tmux only relays Kitty commands through `DCS tmux;` passthrough and never tells the outer terminal where the pane's cursor is. Herdr detects tmux automatically and switches to Kitty [Unicode placeholders](https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders): each image is uploaded as a virtual placement, and the pane cells it covers are drawn as `U+10EEEE` placeholder characters that carry the image and placement ids in their colors. tmux forwards those like ordinary text and the outer terminal replaces them with the image. This needs:
+
+- tmux 3.3 or newer with `set -g allow-passthrough on` (or `all`) in `tmux.conf`.
+- `set -g focus-events on`. With `allow-passthrough on`, tmux drops passthrough written while the pane is not visible, so Herdr re-uploads every image when its window regains focus; the focus event is what triggers that. `allow-passthrough all` forwards commands while hidden and avoids the re-upload.
+- An outer terminal that supports Unicode placeholders, such as kitty or Ghostty.
+
+Placeholder cells replace the text under an image, so inside tmux images placed behind text (a negative Kitty z-index) draw over it instead. `terminal.kitty_graphics = false` disables the tmux path together with the rest of the graphics support, and clients outside tmux keep writing cursor-positioned placements exactly as before.
+
 ## Agent session restore
 
 Herdr resumes supported Agent conversations after a server restart by default:

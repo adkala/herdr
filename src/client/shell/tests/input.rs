@@ -635,3 +635,178 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
     let link = frame.cells[index].hyperlink.expect("linked cell") as usize;
     assert_eq!(frame.hyperlinks[link], "https://example.test");
 }
+
+fn placeholder_graphics_surface() -> PaneSurfaceFrame {
+    let mut pane_surface = surface();
+    let key = crate::protocol::SurfaceGraphicsAssetKey {
+        source: crate::protocol::SurfaceGraphicsSource::Terminal {
+            target: crate::protocol::SurfaceGraphicsTarget::Pane {
+                pane_id: "pane_1".into(),
+            },
+            image_id: 1,
+        },
+        image_width: 2,
+        image_height: 1,
+        format: crate::protocol::SurfaceGraphicsFormat::Rgba,
+        data_len: 8,
+        data_fingerprint: 23,
+    };
+    pane_surface.graphics = crate::protocol::SurfaceGraphicsScene {
+        assets: vec![crate::protocol::SurfaceGraphicsAsset {
+            key: key.clone(),
+            data: vec![1, 2, 3, 4, 5, 6, 7, 8],
+        }],
+        placements: vec![crate::protocol::SurfaceGraphicsPlacement {
+            asset: key,
+            logical_placement_id: 1,
+            x: 0,
+            y: 0,
+            cols: 2,
+            rows: 1,
+            source_x: 0,
+            source_y: 0,
+            source_width: 2,
+            source_height: 1,
+            x_offset: 0,
+            y_offset: 0,
+            z: 0,
+            scrollback_offset: 0,
+        }],
+        retained_assets: Vec::new(),
+    };
+    pane_surface
+}
+
+fn placeholder_cells_in(frame: &FrameData) -> Vec<(u16, u16, u32, u32)> {
+    frame
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, cell)| cell.symbol.starts_with('\u{10EEEE}'))
+        .map(|(index, cell)| {
+            (
+                (index % usize::from(frame.width)) as u16,
+                (index / usize::from(frame.width)) as u16,
+                cell.fg,
+                cell.underline_color,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn client_shell_paints_placeholder_cells_under_the_tmux_transport() {
+    let mut state = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default()).with_graphics_transport(
+            crate::kitty_graphics::HostGraphicsTransport::TmuxPlaceholders,
+        ),
+    );
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(placeholder_graphics_surface());
+
+    let frame = state.compose(106, 20).expect("visible graphics frame");
+    let graphics = String::from_utf8_lossy(&frame.graphics).into_owned();
+    assert!(graphics.contains("a=t,t=d"), "{graphics:?}");
+    assert!(graphics.contains("a=p,U=1,"), "{graphics:?}");
+    assert!(!graphics.contains("\x1b["), "{graphics:?}");
+    let pane = state.hits.panes[0].clone();
+    let cells = placeholder_cells_in(&frame);
+    assert_eq!(cells.len(), 2, "{cells:?}");
+    assert_eq!(
+        (cells[0].0, cells[0].1),
+        (pane.inner_rect.x, pane.inner_rect.y)
+    );
+    assert_eq!(
+        (cells[1].0, cells[1].1),
+        (pane.inner_rect.x + 1, pane.inner_rect.y)
+    );
+    let image_id = crate::kitty_graphics::surface::host_image_id(
+        state.graphics_scope(),
+        &placeholder_graphics_surface().graphics.placements[0].asset,
+    );
+    assert_eq!(
+        cells[0].2,
+        0x0200_0000 | image_id,
+        "image id rides the foreground"
+    );
+    assert_ne!(cells[0].3, 0, "placement id rides the underline color");
+    assert_eq!(cells[0].3, cells[1].3);
+
+    // An unchanged frame sends nothing new but keeps its cells.
+    let again = state.compose(106, 20).expect("second frame");
+    assert!(
+        again.graphics.is_empty(),
+        "{:?}",
+        String::from_utf8_lossy(&again.graphics)
+    );
+    assert_eq!(placeholder_cells_in(&again), cells);
+
+    // Overlays hide the surface: no cells, placement deleted.
+    state.overlay = Some(ClientShellOverlay::Onboarding);
+    let hidden = state.compose(106, 20).expect("overlay frame");
+    assert!(String::from_utf8_lossy(&hidden.graphics).contains("a=d,d=i"));
+    assert!(placeholder_cells_in(&hidden).is_empty());
+
+    state.overlay = None;
+    let restored = state.compose(106, 20).expect("restored frame");
+    let restored_graphics = String::from_utf8_lossy(&restored.graphics).into_owned();
+    assert!(
+        restored_graphics.contains("a=p,U=1,"),
+        "{restored_graphics:?}"
+    );
+    assert!(
+        !restored_graphics.contains("a=t,t=d"),
+        "{restored_graphics:?}"
+    );
+    assert_eq!(placeholder_cells_in(&restored), cells);
+}
+
+#[test]
+fn regaining_focus_under_the_tmux_transport_retransmits_graphics() {
+    let mut state = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default()).with_graphics_transport(
+            crate::kitty_graphics::HostGraphicsTransport::TmuxPlaceholders,
+        ),
+    );
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(placeholder_graphics_surface());
+    state.compose(106, 20).expect("first frame");
+    assert!(state
+        .compose(106, 20)
+        .expect("settled frame")
+        .graphics
+        .is_empty());
+
+    let outcome = state.handle_input_bytes(b"\x1b[I");
+    assert!(outcome.repaint, "focus regain must recompose to re-upload");
+    let frame = state.compose(106, 20).expect("focus frame");
+    let graphics = String::from_utf8_lossy(&frame.graphics).into_owned();
+    assert!(graphics.contains("a=d,d=I"), "{graphics:?}");
+    assert!(graphics.contains("a=t,t=d"), "{graphics:?}");
+    assert!(graphics.contains("a=p,U=1,"), "{graphics:?}");
+    assert_eq!(placeholder_cells_in(&frame).len(), 2);
+}
+
+#[test]
+fn regaining_focus_under_the_direct_transport_sends_no_graphics_reupload() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(placeholder_graphics_surface());
+    let first = state.compose(106, 20).expect("first frame");
+    assert!(placeholder_cells_in(&first).is_empty());
+
+    let outcome = state.handle_input_bytes(b"\x1b[I");
+    let frame = if outcome.repaint {
+        state.compose(106, 20).expect("focus frame")
+    } else {
+        state.compose(106, 20).expect("settled frame")
+    };
+    let graphics = String::from_utf8_lossy(&frame.graphics).into_owned();
+    assert!(!graphics.contains("a=t,t=d"), "{graphics:?}");
+    assert!(!graphics.contains("a=d,d=I"), "{graphics:?}");
+    assert!(
+        graphics.contains("a=p,i="),
+        "direct placements replay every frame: {graphics:?}"
+    );
+    assert!(graphics.contains("C=1"), "{graphics:?}");
+}
