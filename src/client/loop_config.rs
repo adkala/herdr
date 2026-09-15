@@ -6,6 +6,8 @@ pub(super) struct ClientLoopConfig {
     pub(super) redraw_on_focus_gained: bool,
     pub(super) host_cursor: crate::config::HostCursorModeConfig,
     pub(super) kitty_graphics_enabled: bool,
+    /// How graphics bytes reach the host terminal; placeholders inside tmux.
+    pub(super) graphics_transport: crate::kitty_graphics::HostGraphicsTransport,
     pub(super) pixel_geometry_enabled: bool,
     pub(super) pixel_geometry_fallback: bool,
     pub(super) mouse_capture_active: bool,

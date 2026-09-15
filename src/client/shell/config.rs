@@ -159,7 +159,16 @@ impl ClientShellConfig {
             preferences: preferences::ClientChromePreferences::default(),
             startup_config_diagnostic: None,
             startup_onboarding: false,
+            graphics_transport: crate::kitty_graphics::HostGraphicsTransport::Direct,
         }
+    }
+
+    pub(crate) fn with_graphics_transport(
+        mut self,
+        transport: crate::kitty_graphics::HostGraphicsTransport,
+    ) -> Self {
+        self.graphics_transport = transport;
+        self
     }
 
     pub(crate) fn with_startup_config_diagnostic(mut self, diagnostic: Option<String>) -> Self {
