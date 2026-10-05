@@ -877,6 +877,7 @@ impl HeadlessServer {
                     continue;
                 }
             };
+            Self::prepend_surface_underline(&mut serialized, &prepared);
             let shell_graphics_pending = !suppress_impossible_asset_retry
                 && next_shell_graphics_delivery
                     .as_ref()

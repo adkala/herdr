@@ -152,7 +152,10 @@ fn negotiated_surface_decoder(
     let reuse = negotiation.supports_capability(protocol::surface_reuse::CAPABILITY);
     let delta = negotiation.supports_capability(protocol::surface_delta::CAPABILITY);
     let scroll = negotiation.supports_capability(protocol::surface_scroll::CAPABILITY);
-    (reuse || delta || scroll).then(|| protocol::surface_reuse::Decoder::new(delta, scroll))
+    // The decoder also pairs underline colors with the update they precede.
+    let underline = negotiation.supports_capability(protocol::surface_underline::CAPABILITY);
+    (reuse || delta || scroll || underline)
+        .then(|| protocol::surface_reuse::Decoder::new(delta, scroll))
 }
 
 fn run_client_with_mode(
