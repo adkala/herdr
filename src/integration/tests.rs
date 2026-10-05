@@ -1032,6 +1032,34 @@ fn install_claude_is_idempotent_for_hook_entries() {
     let _ = fs::remove_dir_all(base);
 }
 
+#[cfg(not(windows))]
+#[test]
+fn install_claude_keeps_a_home_relative_session_hook() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let home = base.join("home");
+    let claude_dir = home.join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let settings = concat!(
+        "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"*\",\"hooks\":[",
+        "{\"type\":\"command\",\"command\":",
+        "\"bash \\\"$HOME/.claude/hooks/herdr-agent-state.sh\\\" session\",\"timeout\":10}]}]}}\n",
+    );
+    fs::write(claude_dir.join("settings.json"), settings).unwrap();
+    std::env::set_var("HOME", &home);
+
+    let installed = install_claude().unwrap();
+
+    assert!(installed.hook_path.is_file());
+    assert_eq!(
+        fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
+        settings
+    );
+
+    std::env::remove_var("HOME");
+    let _ = fs::remove_dir_all(base);
+}
+
 #[test]
 fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks() {
     let _lock = integration_env_lock();
