@@ -552,6 +552,7 @@ impl HeadlessServer {
                         continue;
                     }
                 };
+            Self::prepend_surface_underline(&mut serialized, &prepared);
             if let Some((_, message)) = &native_upload {
                 let Ok(file_frame) =
                     Self::frame_server_message_with_max(message, MAX_GRAPHICS_FRAME_SIZE)
