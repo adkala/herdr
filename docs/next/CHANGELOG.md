@@ -10,7 +10,7 @@
 - The mobile header and switcher now mark a zoomed tab with the same `Z` label suffix the desktop tab bar shows.
 
 ### Fixed
-- Colored underlines (SGR 58) are kept on rendered cells, so a terminal attached directly to a pane shows editor diagnostics such as Neovim's red undercurls in their own color instead of the text color.
+- Attached clients now render colored underlines (SGR 58), so editor diagnostics such as Neovim's red undercurls keep their color instead of falling back to the text color. The color travels beside surface updates in an optional `endpoint.surface-underline.v1` control, so older clients and servers keep working unchanged and the private protocol version stays at 22.
 
 ## [0.9.3] - 2026-09-29
 

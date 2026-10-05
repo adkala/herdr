@@ -1571,6 +1571,68 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
     cleanup_spawned_herdr(client, base);
 }
 
+#[test]
+fn colored_underlines_reach_the_client_terminal() {
+    // A pane application draws a red undercurl, the way an editor marks a
+    // diagnostic. The color has no place in the published cell layout, so it
+    // travels in the optional underline control; the client must put it back
+    // on the cells it writes to its own terminal.
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+    let (server, client, output) = attach_thin_client_with_config(
+        &config_home,
+        &runtime_dir,
+        &api_socket,
+        &client_socket,
+        "onboarding = false\n",
+    );
+
+    let created = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "create-workspace",
+            "method": "workspace.create",
+            "params": {"cwd": base, "focus": true},
+        })
+        .to_string(),
+    );
+    assert_eq!(created["result"]["type"], "workspace_created", "{created}");
+    let pane_id = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .expect("pane id")
+        .to_string();
+
+    send_pane_shell_command(
+        &api_socket,
+        &pane_id,
+        r"printf '\033[4:3m\033[58:2::255:0:0mSQUIGGLE\033[0m\n'",
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut colored = false;
+    while Instant::now() < deadline {
+        // The shell echoes the typed command, so match the SGR parameter the
+        // client appends after the colors, not the bare digits.
+        if read_output(&output).contains(";58:2::255:0:0m") {
+            colored = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        colored,
+        "the client never wrote the underline color; output: {:?}",
+        read_output(&output)
+    );
+
+    drop(server);
+    cleanup_spawned_herdr(client, base);
+}
+
 /// Polls until the client exits, then returns only the output captured after
 /// the `since` byte watermark. Panics if the client does not exit within the
 /// deadline.

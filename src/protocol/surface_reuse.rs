@@ -86,6 +86,8 @@ pub(crate) struct Decoder {
     baseline: Option<CellBaseline>,
     surface_delta: bool,
     surface_scroll: bool,
+    /// Underline colors announced for the surface update that follows them.
+    underline: Option<super::surface_underline::SurfaceUnderline>,
 }
 
 impl Decoder {
@@ -94,10 +96,60 @@ impl Decoder {
             baseline: None,
             surface_delta,
             surface_scroll,
+            underline: None,
         }
     }
 
     pub(crate) fn decode(&mut self, message: ServerMessage) -> Result<ServerMessage, String> {
+        if let ServerMessage::EndpointControl { kind, data } = &message {
+            if kind == super::surface_underline::MESSAGE_KIND {
+                self.underline = super::surface_underline::decode(data);
+                return Ok(message);
+            }
+        }
+        let mut message = self.decode_surface(message)?;
+        self.paint_underline(&mut message);
+        Ok(message)
+    }
+
+    /// Paints the announced underline colors onto the update they were written
+    /// ahead of, and onto the baseline that update advanced, so cells a later
+    /// encoding reuses keep them.
+    fn paint_underline(&mut self, message: &mut ServerMessage) {
+        let (boot_id, surface_revision) = match &*message {
+            ServerMessage::PaneSurface(surface) => (&surface.boot_id, surface.surface_revision),
+            ServerMessage::PaneSurfacePatch(patch) => (&patch.boot_id, patch.surface_revision),
+            _ => return,
+        };
+        let Some(underline) = self
+            .underline
+            .take()
+            .filter(|underline| underline.belongs_to(boot_id, surface_revision))
+        else {
+            return;
+        };
+        if let Some(base) = self
+            .baseline
+            .as_mut()
+            .filter(|base| base.boot_id == *boot_id && base.surface_revision == surface_revision)
+        {
+            super::surface_underline::paint_grid(&underline.frame, &mut base.cells, base.width);
+            if let Some(popup) = &mut base.popup {
+                super::surface_underline::paint_grid(
+                    &underline.popup,
+                    &mut popup.cells,
+                    popup.width,
+                );
+            }
+        }
+        match message {
+            ServerMessage::PaneSurface(surface) => underline.paint_surface(surface),
+            ServerMessage::PaneSurfacePatch(patch) => underline.paint_patch(patch),
+            _ => {}
+        }
+    }
+
+    fn decode_surface(&mut self, message: ServerMessage) -> Result<ServerMessage, String> {
         let message = match message {
             ServerMessage::EndpointControl { kind, data }
                 if kind == super::surface_delta::MESSAGE_KIND =>

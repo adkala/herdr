@@ -137,6 +137,9 @@ pub(crate) struct ClientShellNegotiated {
     /// The shell relays OSC 52 clipboard queries to its outer terminal
     /// (`host_clipboard_query` hello capability).
     pub(crate) host_clipboard_query: bool,
+    /// The shell paints underline colors sent beside surface updates
+    /// (`surface_underline_color` hello field).
+    pub(crate) surface_underline_color: bool,
 }
 
 /// A connected client tracked by the server.

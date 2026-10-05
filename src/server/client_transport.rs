@@ -807,6 +807,7 @@ pub(crate) fn handle_client_handshake(
                     surface_scroll: hello.surface_scroll,
                     negotiated: crate::server::clients::ClientShellNegotiated {
                         host_clipboard_query: hello.supports_host_clipboard_query(),
+                        surface_underline_color: hello.surface_underline_color,
                     },
                 }),
             )
@@ -1507,6 +1508,7 @@ mod tests {
             surface_reuse: false,
             surface_delta: false,
             surface_scroll: false,
+            surface_underline_color: true,
             snapshot_codecs: vec![crate::protocol::endpoint::SNAPSHOT_CODEC_V1.into()],
             surface_codecs: vec![crate::protocol::endpoint::SURFACE_CODEC_V1.into()],
             input_codecs: vec![crate::protocol::endpoint::INPUT_CODEC_V1.into()],
@@ -2040,6 +2042,7 @@ mod tests {
                 assert!(endpoint_keybindings);
                 assert!(mouse_capture);
                 assert!(negotiated.host_clipboard_query);
+                assert!(negotiated.surface_underline_color);
                 assert!(surface_active);
                 drop(writer);
             }

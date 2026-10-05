@@ -1521,6 +1521,25 @@ impl HeadlessServer {
         Self::frame_server_message_with_max(msg, MAX_FRAME_SIZE)
     }
 
+    /// Puts a prepared update's underline colors ahead of it in the same
+    /// client write, so the two are sent or dropped together and no frame is
+    /// presented between them.
+    fn prepend_surface_underline(
+        serialized: &mut Vec<u8>,
+        prepared: &crate::server::render_stream::PreparedRender,
+    ) {
+        let Some(underline) = prepared.underline() else {
+            return;
+        };
+        match Self::frame_server_message_with_max(underline, protocol::MAX_FRAME_SIZE) {
+            Ok(mut framed) => {
+                framed.append(serialized);
+                *serialized = framed;
+            }
+            Err(err) => warn!(err = %err, "dropping surface underline colors"),
+        }
+    }
+
     /// Encodes a server message using an explicit payload cap.
     fn frame_server_message_with_max(
         msg: &ServerMessage,
@@ -1914,6 +1933,9 @@ impl HeadlessServer {
                 connection
                     .render_state
                     .enable_surface_scroll(surface_scroll);
+                connection
+                    .render_state
+                    .enable_surface_underline_color(negotiated.surface_underline_color);
                 connection.shell_negotiated = negotiated;
                 connection.shell_projection_revision = 1;
                 let config_diagnostic = if endpoint_keybindings {
