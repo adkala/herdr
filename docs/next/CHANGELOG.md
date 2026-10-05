@@ -12,6 +12,7 @@
 
 ### Fixed
 - Attached clients now render colored underlines (SGR 58), so editor diagnostics such as Neovim's red undercurls keep their color instead of falling back to the text color. The color travels beside surface updates in an optional `endpoint.surface-underline.v1` control, so older clients and servers keep working unchanged and the private protocol version stays at 22.
+- `herdr integration install claude` now treats a `SessionStart` hook spelled relative to the home directory (`bash "$HOME/.claude/hooks/herdr-agent-state.sh" session`, also `${HOME}`, unquoted, or `~/`) as the install instead of appending its absolute-path entry beside it, so a `settings.json` shared between machines keeps a single hook. A canonical entry already sitting next to one is dropped, and uninstall removes the home-relative hook too.
 
 ## [0.9.3] - 2026-09-29
 

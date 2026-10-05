@@ -8,11 +8,12 @@ use jsonc_parser::cst::{CstInputValue, CstNode, CstObject, CstRootNode};
 use jsonc_parser::{json, parse_to_ast, CollectOptions, ParseOptions};
 use serde_json::{json as serde_json_value, Map, Value};
 
-use super::command::hook_command;
+use super::command::{home_relative_hook_commands, hook_command};
 use super::config_edit::{
     ensure_command_hook, ensure_hooks_object, hook_command_variants, hooks_object_if_present,
     is_matching_command_hook,
 };
+use super::env::home_dir;
 
 // Claude's documented SessionStart sources. Grok imports Claude hooks but uses
 // `new`/`load`; filter before it starts an unnecessary hook process.
@@ -21,6 +22,14 @@ const SESSION_START_MATCHER: &str = "^(startup|resume|clear|compact|fork)$";
 struct HookRemoval {
     event: &'static str,
     actions: &'static [&'static str],
+}
+
+/// The hook commands an edit treats as Herdr's own.
+struct Owned<'a> {
+    hook_path: &'a Path,
+    home: Option<&'a Path>,
+    /// Leave a home-relative session hook in `SessionStart` alone.
+    keep_home_relative_session: bool,
 }
 
 const HOOK_REMOVALS: &[HookRemoval] = &[
@@ -63,6 +72,16 @@ const HOOK_REMOVALS: &[HookRemoval] = &[
 ];
 
 pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> io::Result<String> {
+    let home = home_dir().ok();
+    install_with_home(content, settings_path, hook_path, home.as_deref())
+}
+
+fn install_with_home(
+    content: &str,
+    settings_path: &Path,
+    hook_path: &Path,
+    home: Option<&Path>,
+) -> io::Result<String> {
     let original = parse_value(content, settings_path)?;
     let mut desired = original.clone();
     let hooks = ensure_hooks_object(
@@ -71,27 +90,36 @@ pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> 
         "claude settings",
         "claude settings hooks",
     )?;
-    let canonical = canonical_hook_value(hook_path);
-    apply_value_removals(hooks, hook_path, Some(&canonical))?;
-    ensure_command_hook(
-        hooks,
-        "SessionStart",
-        hook_command(hook_path, Some("session")),
-        10,
-        Some(SESSION_START_MATCHER),
-    )?;
+    let owned = Owned {
+        hook_path,
+        home,
+        keep_home_relative_session: true,
+    };
+    // A settings file shared between machines cannot hold the absolute hook
+    // path, so a session hook spelled relative to the home directory is the
+    // install. Nothing is added then, and what is left is the removal half of
+    // an uninstall: Herdr's other commands go, the canonical entry included.
+    let kind = if has_home_relative_session_hook(hooks, &owned) {
+        apply_value_removals(hooks, &owned, None)?;
+        EditKind::Uninstall
+    } else {
+        let canonical = canonical_hook_value(hook_path);
+        apply_value_removals(hooks, &owned, Some(&canonical))?;
+        ensure_command_hook(
+            hooks,
+            "SessionStart",
+            hook_command(hook_path, Some("session")),
+            10,
+            Some(SESSION_START_MATCHER),
+        )?;
+        EditKind::Install
+    };
 
     if desired == original {
         return Ok(content.to_string());
     }
 
-    rewrite(
-        content,
-        settings_path,
-        hook_path,
-        EditKind::Install,
-        &desired,
-    )
+    rewrite(content, settings_path, &owned, kind, &desired)
 }
 
 pub(crate) fn uninstall(
@@ -99,9 +127,24 @@ pub(crate) fn uninstall(
     settings_path: &Path,
     hook_path: &Path,
 ) -> io::Result<String> {
+    let home = home_dir().ok();
+    uninstall_with_home(content, settings_path, hook_path, home.as_deref())
+}
+
+fn uninstall_with_home(
+    content: &str,
+    settings_path: &Path,
+    hook_path: &Path,
+    home: Option<&Path>,
+) -> io::Result<String> {
     let original = parse_value(content, settings_path)?;
     let mut desired = original.clone();
     let mut removed = false;
+    let owned = Owned {
+        hook_path,
+        home,
+        keep_home_relative_session: false,
+    };
 
     if let Some(hooks) = hooks_object_if_present(
         &mut desired,
@@ -109,7 +152,7 @@ pub(crate) fn uninstall(
         "claude settings",
         "claude settings hooks",
     )? {
-        removed = apply_value_removals(hooks, hook_path, None)?;
+        removed = apply_value_removals(hooks, &owned, None)?;
     }
 
     if !removed {
@@ -119,20 +162,36 @@ pub(crate) fn uninstall(
     rewrite(
         content,
         settings_path,
-        hook_path,
+        &owned,
         EditKind::Uninstall,
         &desired,
     )
 }
 
+fn has_home_relative_session_hook(hooks: &Map<String, Value>, owned: &Owned) -> bool {
+    let commands = home_relative_hook_commands(owned.hook_path, owned.home, "session");
+    hooks
+        .get("SessionStart")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .any(|hook| {
+            commands
+                .iter()
+                .any(|command| is_matching_command_hook(hook, command))
+        })
+}
+
 fn apply_value_removals(
     hooks: &mut Map<String, Value>,
-    hook_path: &Path,
+    owned: &Owned,
     canonical: Option<&Value>,
 ) -> io::Result<bool> {
     let mut removed = false;
     for policy in HOOK_REMOVALS {
-        let commands = removal_commands(policy, hook_path);
+        let commands = removal_commands(policy, owned);
         removed |= remove_value_event_commands(
             hooks,
             policy.event,
@@ -193,10 +252,11 @@ enum EditKind {
 fn rewrite(
     content: &str,
     settings_path: &Path,
-    hook_path: &Path,
+    owned: &Owned,
     kind: EditKind,
     desired: &Value,
 ) -> io::Result<String> {
+    let hook_path = owned.hook_path;
     let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
         io::Error::other(format!(
             "failed to parse {}: {err}",
@@ -240,7 +300,7 @@ fn rewrite(
     let canonical = canonical_hook_value(hook_path);
     let mut canonical_preserved = false;
     for policy in HOOK_REMOVALS {
-        let commands = removal_commands(policy, hook_path);
+        let commands = removal_commands(policy, owned);
         canonical_preserved |= remove_event_commands(
             &hooks,
             policy.event,
@@ -339,11 +399,24 @@ fn remove_event_commands(
     Ok(canonical_preserved)
 }
 
-fn removal_commands(policy: &HookRemoval, hook_path: &Path) -> Vec<String> {
+fn removal_commands(policy: &HookRemoval, owned: &Owned) -> Vec<String> {
     policy
         .actions
         .iter()
-        .flat_map(|action| hook_command_variants(hook_path, Some(action)))
+        .flat_map(|action| {
+            let mut commands = hook_command_variants(owned.hook_path, Some(action));
+            let kept = owned.keep_home_relative_session
+                && policy.event == "SessionStart"
+                && *action == "session";
+            if !kept {
+                commands.extend(home_relative_hook_commands(
+                    owned.hook_path,
+                    owned.home,
+                    action,
+                ));
+            }
+            commands
+        })
         .collect()
 }
 
@@ -855,5 +928,148 @@ mod tests {
         for input in ["[]", r#"{"hooks": []}"#, r#"{"hooks":{"SessionStart":{}}}"#] {
             assert!(install(input, settings_path, hook_path).is_err());
         }
+    }
+
+    #[cfg(not(windows))]
+    const HOME_RELATIVE_SESSION_ENTRY: &str = concat!(
+        "{\"matcher\":\"*\",\"hooks\":[",
+        "{\"type\":\"command\",\"command\":",
+        "\"bash \\\"$HOME/.claude/hooks/herdr-agent-state.sh\\\" session\",\"timeout\":10},",
+        "{\"type\":\"command\",\"command\":\"echo keep\"}]}",
+    );
+
+    #[cfg(not(windows))]
+    fn home() -> Option<&'static Path> {
+        Some(Path::new("/home/test"))
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn install_is_a_byte_exact_noop_for_a_home_relative_session_hook() {
+        let (settings_path, hook_path) = paths();
+        for spelling in [
+            r#"bash \"$HOME/.claude/hooks/herdr-agent-state.sh\" session"#,
+            r#"bash \"${HOME}/.claude/hooks/herdr-agent-state.sh\" session"#,
+            "bash $HOME/.claude/hooks/herdr-agent-state.sh session",
+            "bash ${HOME}/.claude/hooks/herdr-agent-state.sh session",
+            "bash ~/.claude/hooks/herdr-agent-state.sh session",
+        ] {
+            let input = format!(
+                concat!(
+                    "{{\n",
+                    "  \"hooks\": {{\n",
+                    "    \"SessionStart\": [{{\n",
+                    "      \"matcher\": \"*\",\n",
+                    "      \"hooks\": [\n",
+                    "        {{\"type\":\"command\",\"command\":\"{spelling}\",\"timeout\":10}},\n",
+                    "        {{\"type\":\"command\",\"command\":\"echo keep\"}}\n",
+                    "      ]\n",
+                    "    }}]\n",
+                    "  }}\n",
+                    "}}\n",
+                ),
+                spelling = spelling,
+            );
+
+            let updated = install_with_home(&input, settings_path, hook_path, home()).unwrap();
+
+            assert_eq!(updated, input, "{spelling}");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn install_drops_the_canonical_entry_next_to_a_home_relative_session_hook() {
+        let (settings_path, hook_path) = paths();
+        let canonical = canonical_hook_json(hook_path).unwrap();
+        let input = format!(
+            "{{\"hooks\":{{\"SessionStart\":[{HOME_RELATIVE_SESSION_ENTRY},{canonical}]}}}}"
+        );
+        let expected =
+            format!("{{\"hooks\":{{\"SessionStart\":[{HOME_RELATIVE_SESSION_ENTRY}]}}}}");
+
+        let updated = install_with_home(&input, settings_path, hook_path, home()).unwrap();
+
+        assert_eq!(updated, expected);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn install_drops_a_wildcard_entry_next_to_a_home_relative_session_hook() {
+        // What installs before the native-source matcher appended: the
+        // absolute command under `"*"`. It must go, not migrate.
+        let (settings_path, hook_path) = paths();
+        let command = serde_json::to_string(&hook_command(hook_path, Some("session"))).unwrap();
+        let wildcard = format!(
+            "{{\"matcher\":\"*\",\"hooks\":[{{\"type\":\"command\",\"command\":{command},\"timeout\":10}}]}}"
+        );
+        let input = format!(
+            "{{\"hooks\":{{\"SessionStart\":[{HOME_RELATIVE_SESSION_ENTRY},{wildcard}]}}}}"
+        );
+        let expected =
+            format!("{{\"hooks\":{{\"SessionStart\":[{HOME_RELATIVE_SESSION_ENTRY}]}}}}");
+
+        let updated = install_with_home(&input, settings_path, hook_path, home()).unwrap();
+
+        assert_eq!(updated, expected);
+        assert_eq!(
+            install_with_home(&updated, settings_path, hook_path, home()).unwrap(),
+            updated
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn install_removes_deprecated_home_relative_commands() {
+        let (settings_path, hook_path) = paths();
+        let input = concat!(
+            "{\"hooks\":{\"Stop\":[{\"matcher\":\"*\",\"hooks\":[",
+            "{\"type\":\"command\",\"command\":",
+            "\"bash \\\"$HOME/.claude/hooks/herdr-agent-state.sh\\\" idle\",\"timeout\":10},",
+            "{\"type\":\"command\",\"command\":\"echo keep\"}]}]}}",
+        );
+
+        let updated = install_with_home(input, settings_path, hook_path, home()).unwrap();
+
+        let parsed: Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(
+            parsed["hooks"]["Stop"][0]["hooks"],
+            serde_json_value!([{"type": "command", "command": "echo keep"}])
+        );
+        assert_eq!(
+            parsed["hooks"]["SessionStart"],
+            serde_json_value!([canonical_hook_value(hook_path)])
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn install_only_trusts_a_spelling_that_resolves_to_the_hook() {
+        let (settings_path, hook_path) = paths();
+        let input = format!("{{\"hooks\":{{\"SessionStart\":[{HOME_RELATIVE_SESSION_ENTRY}]}}}}");
+
+        for home in [Some(Path::new("/home/other")), None] {
+            let updated = install_with_home(&input, settings_path, hook_path, home).unwrap();
+
+            let parsed: Value = serde_json::from_str(&updated).unwrap();
+            let entries = parsed["hooks"]["SessionStart"].as_array().unwrap();
+            assert_eq!(entries.len(), 2, "{home:?}");
+            assert_eq!(entries[1], canonical_hook_value(hook_path), "{home:?}");
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn uninstall_removes_a_home_relative_session_hook() {
+        let (settings_path, hook_path) = paths();
+        let input = format!("{{\"hooks\":{{\"SessionStart\":[{HOME_RELATIVE_SESSION_ENTRY}]}}}}");
+
+        let updated = uninstall_with_home(&input, settings_path, hook_path, home()).unwrap();
+
+        let parsed: Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(
+            parsed["hooks"]["SessionStart"][0]["hooks"],
+            serde_json_value!([{"type": "command", "command": "echo keep"}])
+        );
     }
 }
