@@ -693,7 +693,7 @@ pub enum AttachScrollSource {
 
 /// A single cell in a rendered frame, serialized independently from ratatui's
 /// `Cell` type to keep the wire protocol stable.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellData {
     /// Grapheme cluster displayed in this cell (usually 1–2 chars).
     pub symbol: String,
@@ -707,7 +707,32 @@ pub struct CellData {
     pub skip: bool,
     /// Index into `FrameData::hyperlinks` for this cell's OSC 8 target, if any.
     pub hyperlink: Option<u32>,
+    /// Underline color (SGR 58) packed like `fg`; `Reset` (0) means the
+    /// underline takes the foreground color, as SGR 59 would.
+    ///
+    /// Not part of the cell's wire layout, which every published surface
+    /// encoding embeds. A decoded cell starts at `Reset`.
+    #[serde(skip)]
+    pub underline_color: u32,
 }
+
+// Hand-written so the decoded layout stays the six published fields.
+impl<Context> bincode::Decode<Context> for CellData {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Ok(Self {
+            symbol: bincode::Decode::decode(decoder)?,
+            fg: bincode::Decode::decode(decoder)?,
+            bg: bincode::Decode::decode(decoder)?,
+            modifier: bincode::Decode::decode(decoder)?,
+            skip: bincode::Decode::decode(decoder)?,
+            hyperlink: bincode::Decode::decode(decoder)?,
+            underline_color: 0,
+        })
+    }
+}
+bincode::impl_borrow_decode!(CellData);
 
 impl Clone for CellData {
     fn clone(&self) -> Self {
@@ -733,6 +758,7 @@ impl CellData {
             modifier: modifier_to_u16(cell.modifier),
             skip: cell.skip,
             hyperlink: None,
+            underline_color: color_to_u32(cell.underline_color),
         }
     }
 }
@@ -884,6 +910,7 @@ impl FrameData {
                 cell.fg = u32_to_color(cell_data.fg);
                 cell.bg = u32_to_color(cell_data.bg);
                 cell.modifier = u16_to_modifier(cell_data.modifier);
+                cell.underline_color = u32_to_color(cell_data.underline_color);
                 cell.skip = cell_data.skip;
             }
         }
@@ -2511,6 +2538,7 @@ mod tests {
                     modifier: Modifier::BOLD.bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "i".into(),
@@ -2519,6 +2547,7 @@ mod tests {
                     modifier: Modifier::ITALIC.bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "!".into(),
@@ -2527,6 +2556,7 @@ mod tests {
                     modifier: (Modifier::BOLD | Modifier::UNDERLINED).bits(),
                     skip: false,
                     hyperlink: Some(0),
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: " ".into(),
@@ -2535,6 +2565,7 @@ mod tests {
                     modifier: Modifier::empty().bits(),
                     skip: true,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "→".into(), // multi-byte grapheme
@@ -2543,6 +2574,7 @@ mod tests {
                     modifier: Modifier::REVERSED.bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
                 CellData {
                     symbol: "🦀".into(), // emoji, wide grapheme cluster
@@ -2551,6 +2583,7 @@ mod tests {
                     modifier: Modifier::empty().bits(),
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 },
             ],
             width: 3,
@@ -2611,6 +2644,7 @@ mod tests {
                     modifier: 3,
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 }],
             }],
             panes: Vec::new(),
@@ -3082,6 +3116,7 @@ mod tests {
                 modifier: ((i % 16) as u16),
                 skip: i % 100 == 0,
                 hyperlink: None,
+                underline_color: 0,
             })
             .collect();
 
@@ -3380,6 +3415,7 @@ mod tests {
         buffer.cell_mut((2, 0)).unwrap().set_symbol("!");
         buffer.cell_mut((2, 0)).unwrap().fg = Color::Rgb(255, 128, 0);
         buffer.cell_mut((2, 0)).unwrap().bg = Color::Indexed(220);
+        buffer.cell_mut((2, 0)).unwrap().underline_color = Color::Rgb(255, 0, 0);
 
         let cursor = CursorState {
             x: 1,
@@ -3407,6 +3443,11 @@ mod tests {
         assert_eq!(frame.cells[2].symbol, "!");
         assert_eq!(frame.cells[2].fg, color_to_u32(Color::Rgb(255, 128, 0)));
         assert_eq!(frame.cells[2].bg, color_to_u32(Color::Indexed(220)));
+        assert_eq!(
+            frame.cells[2].underline_color,
+            color_to_u32(Color::Rgb(255, 0, 0))
+        );
+        assert_eq!(frame.cells[0].underline_color, color_to_u32(Color::Reset));
 
         let with_links = FrameData::from_ratatui_buffer_with_hyperlinks(
             &buffer,
@@ -3428,6 +3469,10 @@ mod tests {
         assert_eq!(restored.cell((1, 0)).unwrap().symbol(), "i");
         assert_eq!(restored.cell((2, 0)).unwrap().symbol(), "!");
         assert_eq!(restored.cell((2, 0)).unwrap().fg, Color::Rgb(255, 128, 0));
+        assert_eq!(
+            restored.cell((2, 0)).unwrap().underline_color,
+            Color::Rgb(255, 0, 0)
+        );
     }
 
     #[test]
@@ -3441,6 +3486,7 @@ mod tests {
                     modifier: 0,
                     skip: false,
                     hyperlink: None,
+                    underline_color: 0,
                 };
                 5
             ], // 5 cells but 3×2 = 6 expected

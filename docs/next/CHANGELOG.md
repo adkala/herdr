@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Attached clients now render colored underlines (SGR 58), so editor diagnostics such as Neovim's red undercurls keep their color instead of falling back to the text color. The color travels beside surface updates in an optional `endpoint.surface-underline.v1` control, so older clients and servers keep working unchanged and the private protocol version stays at 22.
+
 ## [0.9.4] - 2026-10-13
 
 ### Added
