@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- `herdr integration install claude` now treats a `SessionStart` hook spelled relative to the home directory (`bash "$HOME/.claude/hooks/herdr-agent-state.sh" session`, also `${HOME}`, unquoted, or `~/`) as the install instead of appending its absolute-path entry beside it, so a `settings.json` shared between machines keeps a single hook. A canonical entry already sitting next to one is dropped, and uninstall removes the home-relative hook too.
+
 ## [0.9.3] - 2026-09-29
 
 This is a hotfix release for v0.9.2. See the v0.9.2 notes for the full feature release: https://github.com/herdrdev/herdr/releases/tag/v0.9.2
