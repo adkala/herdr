@@ -54,6 +54,13 @@ pub(super) fn client_remote_image_paste_key(
     }
 }
 
+/// Whether this client answers relayed OSC 52 paste queries from its own
+/// clipboard: `advanced.osc52_paste = "server"` on a machine that has one.
+pub(super) fn client_local_clipboard_paste(config: &crate::config::Config) -> bool {
+    crate::app::osc52_paste_mode_from_config(config.advanced.osc52_paste)
+        == crate::pane::Osc52PasteMode::ServerClipboard
+}
+
 pub(super) fn endpoint_accepts_local_images(
     remote_client_process: bool,
     endpoint_id: &super::endpoint::ClientEndpointId,

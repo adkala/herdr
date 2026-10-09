@@ -42,7 +42,9 @@ use self::agent_detection::{
     ScreenDetectionPublishInput, AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
 };
 use self::background_agent::{AgentJobStatus, AgentJobTracker};
-pub(crate) use self::osc::{osc52_paste_reply_from_base64, set_osc52_paste_mode, Osc52PasteMode};
+pub(crate) use self::osc::{
+    osc52_paste_payload, osc52_paste_reply_from_base64, set_osc52_paste_mode, Osc52PasteMode,
+};
 #[cfg(test)]
 pub(crate) use self::terminal::test_encode_key_for_app;
 #[cfg(unix)]

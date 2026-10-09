@@ -665,17 +665,18 @@ fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
     sanitized
 }
 
-/// How OSC 52 clipboard read queries (paste) are answered. Mirrors
-/// `advanced.osc52_paste`; kept as a pane-layer type so the PTY path does not
-/// depend on config model types.
+/// How OSC 52 clipboard read queries (paste) are answered. Resolved from
+/// `advanced.osc52_paste` and whether this machine has a clipboard; kept as a
+/// pane-layer type so the PTY path does not depend on config model types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Osc52PasteMode {
     /// Ignore queries (previous behavior).
     Off,
-    /// Answer inline with the clipboard of the machine running the server.
+    /// Answer with this machine's own clipboard: inline on a server, and in
+    /// place of asking the outer terminal on a client relaying a query.
     ServerClipboard,
-    /// Forward the query to the attached client's outer terminal and relay
-    /// its reply asynchronously.
+    /// Forward the query to the attached client and relay its reply
+    /// asynchronously.
     HostTerminal,
 }
 
@@ -826,9 +827,6 @@ fn is_osc52_clipboard_query(body: &[u8]) -> bool {
     selector.is_empty() || selector == b"c"
 }
 
-/// Builds the OSC 52 paste reply: `ESC ] 52 ; c ; <base64(text)> BEL`. A
-/// failed read (`None`) or oversized clipboard replies with an empty payload
-/// so a waiting application unblocks instead of timing out.
 /// Builds an OSC 52 paste reply from an already base64-encoded payload
 /// relayed from the attached client's outer terminal. Invalid or oversized
 /// payloads reply empty so a waiting application unblocks with no paste.
@@ -847,15 +845,23 @@ pub(crate) fn osc52_paste_reply_from_base64(payload: &str) -> Bytes {
     Bytes::from(reply)
 }
 
-pub(crate) fn osc52_paste_reply(clipboard_text: Option<String>) -> Bytes {
+/// Base64 payload of an OSC 52 paste reply for clipboard text. A failed read
+/// (`None`) or oversized clipboard yields an empty payload so a waiting
+/// application unblocks instead of timing out.
+pub(crate) fn osc52_paste_payload(clipboard_text: Option<String>) -> String {
     use base64::Engine;
-    let mut reply = Vec::from(&b"\x1b]52;c;"[..]);
-    if let Some(text) = clipboard_text {
-        if text.len() <= OSC52_PASTE_MAX_TEXT_BYTES {
-            let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-            reply.extend_from_slice(encoded.as_bytes());
+    match clipboard_text {
+        Some(text) if text.len() <= OSC52_PASTE_MAX_TEXT_BYTES => {
+            base64::engine::general_purpose::STANDARD.encode(text.as_bytes())
         }
+        _ => String::new(),
     }
+}
+
+/// Builds the OSC 52 paste reply: `ESC ] 52 ; c ; <base64(text)> BEL`.
+pub(crate) fn osc52_paste_reply(clipboard_text: Option<String>) -> Bytes {
+    let mut reply = Vec::from(&b"\x1b]52;c;"[..]);
+    reply.extend_from_slice(osc52_paste_payload(clipboard_text).as_bytes());
     reply.push(0x07);
     Bytes::from(reply)
 }
@@ -1756,6 +1762,19 @@ mod tests {
         assert_eq!(
             osc52_paste_reply_from_base64(&"A".repeat(OSC52_PASTE_MAX_TEXT_BYTES / 3 * 4 + 5)),
             empty
+        );
+    }
+
+    #[test]
+    fn osc52_paste_payload_round_trips_through_the_relayed_reply() {
+        let payload = osc52_paste_payload(Some("x".repeat(OSC52_PASTE_MAX_TEXT_BYTES)));
+        let reply = osc52_paste_reply_from_base64(&payload);
+        assert_eq!(reply.len(), b"\x1b]52;c;\x07".len() + payload.len());
+
+        assert_eq!(osc52_paste_payload(None), "");
+        assert_eq!(
+            osc52_paste_payload(Some("x".repeat(OSC52_PASTE_MAX_TEXT_BYTES + 1))),
+            ""
         );
     }
 

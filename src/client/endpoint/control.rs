@@ -11,8 +11,8 @@ pub(crate) enum EndpointControlMessage {
     AgentViewProjection(DecodedAgentViewProjection),
     AgentCompletions(crate::protocol::endpoint::EndpointAgentCompletions),
     Snapshot(Box<crate::protocol::ClientShellSnapshot>),
-    /// The server asks this shell to query its outer terminal's clipboard with
-    /// OSC 52 (`advanced.osc52_paste = "terminal"`).
+    /// The server relays a pane's OSC 52 clipboard read query to this shell,
+    /// which answers from its own clipboard or its outer terminal's.
     HostClipboardQuery,
     Ignored,
 }
