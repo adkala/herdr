@@ -70,6 +70,10 @@ pub(super) struct ClientState {
     pub(super) remote_image_paste_key:
         Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
     pub(super) redraw_on_focus_gained: bool,
+    /// `advanced.osc52_paste = "server"` on a machine with a clipboard: answer
+    /// an endpoint's relayed OSC 52 paste query from that clipboard instead of
+    /// asking the outer terminal.
+    pub(super) local_clipboard_paste: bool,
     pub(super) repaint_pending: bool,
     /// During a source-off-first handoff the currently blitted frame remains authoritative until
     /// an acknowledged target snapshot/surface pair commits.
@@ -130,6 +134,7 @@ impl ClientState {
             mouse_scroll_lines: 3,
             remote_image_paste_key: None,
             redraw_on_focus_gained: false,
+            local_clipboard_paste: false,
             repaint_pending: false,
             presentation_frozen: false,
             deferred_local_activation: None,

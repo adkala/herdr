@@ -638,6 +638,11 @@ pub fn write_clipboard(bytes: &[u8]) -> bool {
     )
 }
 
+/// Whether this machine has a clipboard `read_clipboard_text` can reach.
+pub fn clipboard_read_available() -> bool {
+    true
+}
+
 pub fn read_clipboard_text() -> Option<String> {
     const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
 

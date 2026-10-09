@@ -786,6 +786,13 @@ pub fn write_clipboard(bytes: &[u8]) -> bool {
     false
 }
 
+/// Whether this machine has a clipboard `read_clipboard_text` can reach. False
+/// on a headless host (no Wayland or X11 session), which is how an ssh remote
+/// knows to hand OSC 52 paste queries to its client instead.
+pub fn clipboard_read_available() -> bool {
+    !read_clipboard_text_commands().is_empty()
+}
+
 pub fn read_clipboard_text() -> Option<String> {
     for command in read_clipboard_text_commands() {
         if let Some(text) = read_clipboard_text_with_command(&command) {
@@ -1895,6 +1902,21 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].program, "xclip");
         assert_eq!(commands[1].program, "xsel");
+    }
+
+    #[test]
+    fn clipboard_read_needs_a_display_session() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::remove_var("WAYLAND_DISPLAY");
+            std::env::remove_var("DISPLAY");
+        }
+        assert!(!clipboard_read_available());
+
+        unsafe {
+            std::env::set_var("DISPLAY", ":0");
+        }
+        assert!(clipboard_read_available());
     }
 
     #[test]

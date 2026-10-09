@@ -19,5 +19,8 @@ pub(super) struct ClientLoopConfig {
     pub(super) escape_time_ms: Option<i32>,
     pub(super) remote_image_paste_key:
         Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
+    /// Answer relayed OSC 52 paste queries from this machine's clipboard
+    /// instead of asking the outer terminal.
+    pub(super) local_clipboard_paste: bool,
     pub(super) shell_config: Option<shell::ClientShellConfig>,
 }

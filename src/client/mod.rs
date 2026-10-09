@@ -100,7 +100,8 @@ use attach::AttachEscapeState;
 #[cfg(unix)]
 use attach::{write_attach_semantic_action, AttachInputAction};
 use clipboard_images::{
-    client_remote_image_paste_key, endpoint_accepts_local_images, write_remote_image_to_server,
+    client_local_clipboard_paste, client_remote_image_paste_key, endpoint_accepts_local_images,
+    write_remote_image_to_server,
 };
 #[cfg(windows)]
 use clipboard_images::{read_image_file_from_client_events, should_bridge_clipboard_image_events};
@@ -200,6 +201,7 @@ fn run_client_with_mode(
     let redraw_on_focus_gained = loaded_config.config.ui.redraw_on_focus_gained;
     let host_cursor = loaded_config.config.ui.host_cursor;
     let remote_image_paste_key = client_remote_image_paste_key(&loaded_config.config);
+    let local_clipboard_paste = client_local_clipboard_paste(&loaded_config.config);
     let pixel_geometry_enabled = kitty_graphics_enabled || attach_escape.is_some();
     let endpoint_keybindings = shell_config
         .as_ref()
@@ -219,6 +221,7 @@ fn run_client_with_mode(
         endpoint_keybindings,
         escape_time_ms: loaded_config.config.advanced.escape_time_ms.map(i32::from),
         remote_image_paste_key,
+        local_clipboard_paste,
         shell_config,
     };
 
@@ -479,6 +482,7 @@ async fn run_client_loop(
         mouse_scroll_lines: config.mouse_scroll_lines,
         remote_image_paste_key: config.remote_image_paste_key,
         redraw_on_focus_gained: config.redraw_on_focus_gained,
+        local_clipboard_paste: config.local_clipboard_paste,
         repaint_pending: false,
         presentation_frozen: false,
         deferred_local_activation: None,
@@ -2058,18 +2062,30 @@ async fn run_client_loop(
                             }
                             Ok(endpoint::EndpointControlMessage::HostClipboardQuery) => {
                                 // Only the endpoint holding the host presentation may
-                                // talk to the outer terminal. Answer an inactive
-                                // endpoint empty so its pane does not wait out the
-                                // server-side reply timeout.
-                                if endpoint_active {
-                                    let _ = endpoint::write_host_clipboard_query(&mut io::stdout());
-                                } else {
+                                // read the clipboard. Answer an inactive endpoint
+                                // empty so its pane does not wait out the server-side
+                                // reply timeout.
+                                if !endpoint_active {
                                     write_stream.send_to(
                                         &endpoint_id,
                                         &crate::protocol::endpoint::host_clipboard_reply_message(
                                             String::new(),
                                         ),
                                     );
+                                } else if state.local_clipboard_paste {
+                                    // This machine owns the clipboard, so answer from
+                                    // it; the outer terminal may be a multiplexer that
+                                    // only knows its own paste buffer.
+                                    write_stream.send_to(
+                                        &endpoint_id,
+                                        &crate::protocol::endpoint::host_clipboard_reply_message(
+                                            crate::pane::osc52_paste_payload(
+                                                crate::platform::read_clipboard_text(),
+                                            ),
+                                        ),
+                                    );
+                                } else {
+                                    let _ = endpoint::write_host_clipboard_query(&mut io::stdout());
                                 }
                                 continue;
                             }

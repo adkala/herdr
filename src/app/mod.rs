@@ -357,13 +357,29 @@ pub(crate) fn client_palette_for_appearance(
     resolve_effective_theme(runtime, Some(appearance)).0
 }
 
-fn osc52_paste_mode_from_config(
+/// Resolves `advanced.osc52_paste` for this process. Servers and clients share
+/// it, so one config answers from whichever machine in the chain owns a
+/// clipboard.
+pub(crate) fn osc52_paste_mode_from_config(
     value: crate::config::Osc52PasteConfig,
+) -> crate::pane::Osc52PasteMode {
+    resolve_osc52_paste_mode(value, crate::platform::clipboard_read_available())
+}
+
+fn resolve_osc52_paste_mode(
+    value: crate::config::Osc52PasteConfig,
+    clipboard_read_available: bool,
 ) -> crate::pane::Osc52PasteMode {
     match value {
         crate::config::Osc52PasteConfig::Off => crate::pane::Osc52PasteMode::Off,
-        crate::config::Osc52PasteConfig::Server => crate::pane::Osc52PasteMode::ServerClipboard,
-        crate::config::Osc52PasteConfig::Terminal => crate::pane::Osc52PasteMode::HostTerminal,
+        // A machine with no clipboard of its own (a headless ssh remote) could
+        // only ever answer empty, so "server" hands the query outward there.
+        crate::config::Osc52PasteConfig::Server if clipboard_read_available => {
+            crate::pane::Osc52PasteMode::ServerClipboard
+        }
+        crate::config::Osc52PasteConfig::Server | crate::config::Osc52PasteConfig::Terminal => {
+            crate::pane::Osc52PasteMode::HostTerminal
+        }
     }
 }
 
@@ -1052,6 +1068,43 @@ mod tests {
         );
         app.state.default_shell = exiting_test_command().into();
         app
+    }
+
+    #[test]
+    fn osc52_paste_server_mode_forwards_without_a_local_clipboard() {
+        use crate::config::Osc52PasteConfig;
+        use crate::pane::Osc52PasteMode;
+
+        for (value, clipboard_read_available, expected) in [
+            (Osc52PasteConfig::Off, true, Osc52PasteMode::Off),
+            (Osc52PasteConfig::Off, false, Osc52PasteMode::Off),
+            (
+                Osc52PasteConfig::Server,
+                true,
+                Osc52PasteMode::ServerClipboard,
+            ),
+            (
+                Osc52PasteConfig::Server,
+                false,
+                Osc52PasteMode::HostTerminal,
+            ),
+            (
+                Osc52PasteConfig::Terminal,
+                true,
+                Osc52PasteMode::HostTerminal,
+            ),
+            (
+                Osc52PasteConfig::Terminal,
+                false,
+                Osc52PasteMode::HostTerminal,
+            ),
+        ] {
+            assert_eq!(
+                resolve_osc52_paste_mode(value, clipboard_read_available),
+                expected,
+                "{value:?} with clipboard_read_available={clipboard_read_available}"
+            );
+        }
     }
 
     fn unique_temp_path(name: &str) -> std::path::PathBuf {

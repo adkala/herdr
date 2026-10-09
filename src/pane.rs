@@ -40,7 +40,9 @@ use self::agent_detection::{
     DetectionScreenReadInput, PendingIdleConfirmation, ScreenDetectionPublishInput,
     AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
 };
-pub(crate) use self::osc::{osc52_paste_reply_from_base64, set_osc52_paste_mode, Osc52PasteMode};
+pub(crate) use self::osc::{
+    osc52_paste_payload, osc52_paste_reply_from_base64, set_osc52_paste_mode, Osc52PasteMode,
+};
 #[cfg(unix)]
 pub use self::terminal::InputState;
 use self::terminal::{GhosttyPaneTerminal, PaneTerminal};

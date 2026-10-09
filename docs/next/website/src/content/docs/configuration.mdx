@@ -530,7 +530,7 @@ Pane applications that read the clipboard with OSC 52 (for example Neovim paste)
 osc52_paste = "terminal"
 ```
 
-`true` (or `"server"`) answers with the clipboard of the machine running the Herdr server. `"terminal"` forwards the query to the terminal Herdr is displayed in and relays its reply, so panes paste from your local clipboard even when Herdr runs on an SSH remote; your terminal must support OSC 52 reads and may ask for permission, and panes receive an empty reply after a 5 second timeout. OSC 52 clipboard writes (copy) always work and are unaffected by this key.
+`true` (or `"server"`) answers with the clipboard of the machine running the Herdr server. A server with no clipboard of its own, such as a headless SSH host, hands the query to its attached client instead; a client set to `"server"` on a machine with a clipboard answers from that clipboard, so the same value works on both ends of `herdr --remote`. `"terminal"` forwards the query to the terminal Herdr is displayed in and relays its reply, so panes paste from your local clipboard even when Herdr runs on an SSH remote; your terminal must support OSC 52 reads and may ask for permission, and panes receive an empty reply after a 5 second timeout. OSC 52 clipboard writes (copy) always work and are unaffected by this key.
 
 ## Kitty graphics
 

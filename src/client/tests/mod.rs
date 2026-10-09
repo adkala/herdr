@@ -710,6 +710,7 @@ fn reload_local_client_config_refreshes_local_client_presentation_state() {
     let mut draw_host_cursor = false;
     let mut remote_image_paste_key = None;
     let mut mouse_capture = true;
+    let mut local_clipboard_paste = true;
 
     reload_local_client_config(
         &mut sound_config,
@@ -717,11 +718,15 @@ fn reload_local_client_config_refreshes_local_client_presentation_state() {
         &mut draw_host_cursor,
         &mut remote_image_paste_key,
         &mut mouse_capture,
+        &mut local_clipboard_paste,
     );
 
     assert!(!redraw_on_focus_gained);
     assert!(draw_host_cursor);
     assert!(!mouse_capture);
+    // `advanced.osc52_paste` is unset, so relayed paste queries stay with
+    // the outer terminal.
+    assert!(!local_clipboard_paste);
     let _ = std::fs::remove_file(path);
 }
 
@@ -744,6 +749,7 @@ fn reload_local_client_config_keeps_ui_preferences_when_ui_is_invalid() {
     let mut draw_host_cursor = true;
     let mut remote_image_paste_key = None;
     let mut mouse_capture = false;
+    let mut local_clipboard_paste = false;
 
     reload_local_client_config(
         &mut sound_config,
@@ -751,6 +757,7 @@ fn reload_local_client_config_keeps_ui_preferences_when_ui_is_invalid() {
         &mut draw_host_cursor,
         &mut remote_image_paste_key,
         &mut mouse_capture,
+        &mut local_clipboard_paste,
     );
 
     assert!(!mouse_capture);

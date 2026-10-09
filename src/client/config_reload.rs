@@ -20,6 +20,7 @@ pub(super) fn apply_reload(
         &mut state.draw_host_cursor,
         &mut state.remote_image_paste_key,
         &mut mouse_capture,
+        &mut state.local_clipboard_paste,
     );
     state.shell_mouse_capture_preference = mouse_capture;
     state.direct_mouse_capture_preference = state.attach_escape.is_some() && mouse_capture;
@@ -98,6 +99,7 @@ pub(super) fn reload_local_client_config(
         crossterm::event::KeyModifiers,
     )>,
     mouse_capture: &mut bool,
+    local_clipboard_paste: &mut bool,
 ) {
     match crate::config::load_live_config() {
         Ok(loaded) => {
@@ -119,6 +121,9 @@ pub(super) fn reload_local_client_config(
             }
             if !invalid_section("keys") {
                 *remote_image_paste_key = client_remote_image_paste_key(&loaded.config);
+            }
+            if !invalid_section("advanced") {
+                *local_clipboard_paste = client_local_clipboard_paste(&loaded.config);
             }
             debug!("reloaded local client config");
         }
