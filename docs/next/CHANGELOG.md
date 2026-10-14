@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Added `advanced.escape_time_ms` to configure the lone-Escape flush delay; set it to `0` for no delay, like tmux `escape-time 0`. It applies to both the thin client's stdin reader and the in-process input reader, so it works over ssh and inside tmux, where the outer terminal ignores Herdr's Kitty keyboard push and sends a bare `0x1b`. Defaults to unset, preserving the previous behavior: 10ms normally, 150ms while the terminal has mouse capture active and an Escape is pending. A half-read SGR mouse report always keeps its longer reassembly window, since those bytes are unambiguously mid-sequence.
+
 ## [0.9.4] - 2026-10-13
 
 ### Added
